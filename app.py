@@ -1,11 +1,27 @@
 from datetime import date, datetime
+import threading
 import time
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
+try:
+    from streamlit_autorefresh import st_autorefresh  # type: ignore[import-not-found]
+except ImportError:
+    def st_autorefresh(*args, **kwargs):
+        return None
+
 from report_utils import calculate_thermal_stats, create_sanification_pdf, normalize_temperature_df, parse_manual_data
-from storage import frames_for_activity, init_db, list_activity_codes, recent_frames, save_frame
+from storage import (
+    frames_for_activity,
+    init_db,
+    list_activity_codes,
+    recent_batch_runs,
+    recent_frames,
+    save_batch_run,
+    save_frame,
+)
 from udp_client import MockUdpControllerClient, UdpControllerClient
 
 
@@ -25,6 +41,24 @@ st.markdown(
     }
     .metric-ok {color: #166534; font-weight: 700;}
     .metric-ko {color: #991b1b; font-weight: 700;}
+    .timer-card {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 8px 12px;
+        margin-top: 6px;
+    }
+    .clock-label {font-size: 0.8rem; color: #475569;}
+    .clock-value {font-size: 1.35rem; font-weight: 700; color: #0f172a;}
+    div.stButton > button[kind="primary"] {
+        background-color: #dc2626;
+        border-color: #b91c1c;
+        color: #ffffff;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background-color: #b91c1c;
+        border-color: #991b1b;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -42,6 +76,27 @@ if "version_info" not in st.session_state:
     st.session_state.version_info = {"hw": None, "fw": None}
 if "activity_code" not in st.session_state:
     st.session_state.activity_code = ""
+if "batch_state" not in st.session_state:
+    st.session_state.batch_state = {
+        "running": False,
+        "current_cycle": 0,
+        "completed_frames": 0,
+        "start_utc": None,
+        "start_monotonic": None,
+        "end_utc": None,
+        "last_values": None,
+        "last_latency_ms": None,
+        "last_error": None,
+        "stop_reason": None,
+        "mode": None,
+        "duration_sec": 0,
+        "threshold_event": False,
+        "activity_code": None,
+    }
+if "batch_thread" not in st.session_state:
+    st.session_state.batch_thread = None
+if "batch_stop_event" not in st.session_state:
+    st.session_state.batch_stop_event = None
 
 
 def activity_frames_to_temp_df(rows: list[dict], metric: str) -> pd.DataFrame:
@@ -74,9 +129,125 @@ def activity_frames_to_temp_df(rows: list[dict], metric: str) -> pd.DataFrame:
     out = df[["tempo_min", "temperatura_c"]].dropna().sort_values("tempo_min")
     return out.reset_index(drop=True)
 
+
+def format_hhmmss(total_seconds: float) -> str:
+    sec = max(0, int(total_seconds))
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def make_client_from_config(cfg: dict) -> UdpControllerClient | MockUdpControllerClient:
+    if cfg["use_mock"]:
+        return MockUdpControllerClient(
+            timeout_sec=float(cfg["timeout_sec"]),
+            seed=cfg.get("mock_seed"),
+            timeout_rate=float(cfg.get("mock_timeout_rate", 0.08)),
+            ser_rate=float(cfg.get("mock_ser_rate", 0.05)),
+            scenario=cfg.get("mock_scenario", "normal"),
+        )
+    return UdpControllerClient(port=int(cfg["port"]), timeout_sec=float(cfg["timeout_sec"]))
+
+
+def run_batch_worker(cfg: dict, stop_event: threading.Event, state: dict) -> None:
+    client_local = make_client_from_config(cfg)
+    start_ts = time.time()
+    state["running"] = True
+    state["current_cycle"] = 0
+    state["completed_frames"] = 0
+    state["start_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    state["start_monotonic"] = start_ts
+    state["end_utc"] = None
+    state["stop_reason"] = None
+    state["mode"] = cfg["mode"]
+    state["duration_sec"] = int(cfg.get("duration_sec", 0) or 0)
+    state["threshold_event"] = False
+    state["activity_code"] = cfg["activity_code"]
+
+    try:
+        while True:
+            if stop_event.is_set():
+                state["stop_reason"] = "Arresto manuale richiesto"
+                break
+
+            state["current_cycle"] += 1
+            result = client_local.request_sensors(cfg["controller_ip"])
+            frame = {
+                "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "activity_code": cfg["activity_code"],
+                "controller_ip": cfg["controller_ip"],
+                "hw_version": cfg.get("hw_version"),
+                "fw_version": cfg.get("fw_version"),
+                "values": result["values"],
+                "frame_complete": result["frame_complete"],
+                "latency_ms": result["latency_ms"],
+                "error_text": result["error_text"],
+                "raw_messages": result["raw_messages"],
+            }
+            save_frame(cfg["db_path"], frame)
+
+            if frame["frame_complete"]:
+                state["completed_frames"] += 1
+            state["last_values"] = frame["values"]
+            state["last_latency_ms"] = frame["latency_ms"]
+            state["last_error"] = frame["error_text"]
+
+            if cfg["mode"] == "cycles" and state["current_cycle"] >= cfg["max_cycles"]:
+                state["stop_reason"] = f"Raggiunto limite cicli: {cfg['max_cycles']}"
+                break
+
+            elapsed_sec = time.time() - start_ts
+            if cfg["mode"] in {"timer", "timer_or_threshold"} and elapsed_sec >= cfg["duration_sec"]:
+                state["stop_reason"] = "Timer completato"
+                break
+
+            if cfg["mode"] in {"threshold", "timer_or_threshold"}:
+                for idx, value in enumerate(frame["values"]):
+                    threshold = cfg["sensor_thresholds"][idx]
+                    if threshold is None or value is None:
+                        continue
+                    if float(value) >= float(threshold):
+                        state["stop_reason"] = (
+                            f"Soglia raggiunta su s{idx + 1}: {value} >= {threshold}"
+                        )
+                        state["threshold_event"] = True
+                        stop_event.set()
+                        break
+                if stop_event.is_set() and state["stop_reason"]:
+                    break
+
+            if stop_event.wait(timeout=float(cfg["poll_interval_sec"])):
+                state["stop_reason"] = "Arresto manuale richiesto"
+                break
+    except Exception as exc:
+        state["stop_reason"] = f"Errore batch: {exc}"
+    finally:
+        state["running"] = False
+        state["end_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        try:
+            save_batch_run(
+                cfg["db_path"],
+                {
+                    "activity_code": cfg.get("activity_code"),
+                    "mode": cfg.get("mode"),
+                    "start_utc": state.get("start_utc"),
+                    "end_utc": state.get("end_utc"),
+                    "duration_sec": int(time.time() - start_ts),
+                    "cycles_executed": state.get("current_cycle") or 0,
+                    "completed_frames": state.get("completed_frames") or 0,
+                    "stop_reason": state.get("stop_reason"),
+                    "threshold_event": state.get("threshold_event") or False,
+                    "controller_ip": cfg.get("controller_ip"),
+                },
+            )
+        except Exception:
+            pass
+
 with st.sidebar:
     st.header("Collector UDP")
     use_mock = st.toggle("Modalita mock (simulazione)", value=False)
+    auto_refresh_batch = st.toggle("Auto-refresh stato batch", value=True)
     broadcast_ip = st.text_input("Broadcast IP", value="192.168.1.255")
     port = st.number_input("Porta UDP", min_value=1, max_value=65535, value=3274)
     timeout_sec = st.number_input("Timeout (s)", min_value=0.2, max_value=10.0, value=2.0, step=0.2)
@@ -114,6 +285,9 @@ if use_mock:
     )
 else:
     client = UdpControllerClient(port=int(port), timeout_sec=float(timeout_sec))
+
+if st.session_state.batch_state.get("running") and auto_refresh_batch:
+    st_autorefresh(interval=1000, key="batch_live_refresh")
 
 tab1, tab2 = st.tabs(["Collector UDP", "Report Sanificazione"])
 
@@ -187,39 +361,156 @@ with tab1:
                 save_frame(db_path, frame)
                 st.success(f"Frame salvato. Values={frame['values']} complete={frame['frame_complete']}")
 
-        cycles = st.number_input("Numero cicli batch", min_value=1, max_value=5000, value=30)
-        if st.button("4) Batch polling + save", use_container_width=True):
-            if not st.session_state.controller_ip:
+        st.markdown("#### Batch raccolta")
+        batch_mode = st.selectbox(
+            "Modalita arresto batch",
+            options=["Numero cicli", "Timer (hh:mm)", "Soglie sensori", "Timer o soglie (prima condizione)"],
+            index=1,
+        )
+
+        max_cycles = 30
+        duration_hours = 0
+        duration_minutes = 30
+        if batch_mode == "Numero cicli":
+            max_cycles = int(st.number_input("Numero cicli batch", min_value=1, max_value=100000, value=30))
+        if batch_mode in {"Timer (hh:mm)", "Timer o soglie (prima condizione)"}:
+            h_col, m_col = st.columns(2)
+            with h_col:
+                duration_hours = int(st.number_input("Ore", min_value=0, max_value=48, value=0))
+            with m_col:
+                duration_minutes = int(st.number_input("Minuti", min_value=0, max_value=59, value=30))
+
+        sensor_thresholds = [None] * 8
+        if batch_mode in {"Soglie sensori", "Timer o soglie (prima condizione)"}:
+            st.caption("Interrompi il batch se una qualsiasi sonda supera la soglia impostata.")
+            tcols1 = st.columns(4)
+            tcols2 = st.columns(4)
+            labels = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+            for i in range(4):
+                with tcols1[i]:
+                    sensor_thresholds[i] = float(st.number_input(f"Soglia {labels[i]} (C)", value=55.0, step=0.5, key=f"thr_{labels[i]}"))
+            for i in range(4, 8):
+                with tcols2[i - 4]:
+                    sensor_thresholds[i] = float(st.number_input(f"Soglia {labels[i]} (C)", value=55.0, step=0.5, key=f"thr_{labels[i]}"))
+
+        mode_map = {
+            "Numero cicli": "cycles",
+            "Timer (hh:mm)": "timer",
+            "Soglie sensori": "threshold",
+            "Timer o soglie (prima condizione)": "timer_or_threshold",
+        }
+
+        mode_key = mode_map[batch_mode]
+        duration_sec = (duration_hours * 3600) + (duration_minutes * 60)
+
+        start_col, stop_col = st.columns(2)
+        is_running = bool(st.session_state.batch_state.get("running"))
+        with start_col:
+            start_batch = st.button("4) Avvia batch", use_container_width=True, disabled=is_running)
+        with stop_col:
+            stop_batch = st.button(
+                "STOP batch (manuale)",
+                use_container_width=True,
+                type="primary" if is_running else "secondary",
+                disabled=not is_running,
+            )
+
+        if stop_batch and st.session_state.batch_state.get("running") and st.session_state.batch_stop_event is not None:
+            st.session_state.batch_stop_event.set()
+            st.warning("Richiesta di arresto batch inviata.")
+
+        if start_batch:
+            if st.session_state.batch_state.get("running"):
+                st.warning("Batch gia in esecuzione.")
+            elif not st.session_state.controller_ip:
                 st.error("Controller IP mancante")
             elif not st.session_state.activity_code:
                 st.error("Inserisci un codice attivita prima di avviare il batch")
+            elif mode_key in {"timer", "timer_or_threshold"} and duration_sec <= 0:
+                st.error("Imposta una durata valida maggiore di 0 minuti")
             else:
-                progress = st.progress(0)
-                status = st.empty()
-                ok = 0
-                for i in range(int(cycles)):
-                    result = client.request_sensors(st.session_state.controller_ip)
-                    frame = {
-                        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-                        "activity_code": st.session_state.activity_code,
-                        "controller_ip": st.session_state.controller_ip,
-                        "hw_version": st.session_state.version_info.get("hw"),
-                        "fw_version": st.session_state.version_info.get("fw"),
-                        "values": result["values"],
-                        "frame_complete": result["frame_complete"],
-                        "latency_ms": result["latency_ms"],
-                        "error_text": result["error_text"],
-                        "raw_messages": result["raw_messages"],
-                    }
-                    save_frame(db_path, frame)
-                    if frame["frame_complete"]:
-                        ok += 1
-                    progress.progress((i + 1) / int(cycles))
-                    status.write(
-                        f"[{st.session_state.activity_code}] Ciclo {i + 1}/{int(cycles)} - complete={ok} - last={frame['values']} - latency={frame['latency_ms']}ms"
-                    )
-                    time.sleep(float(poll_interval_sec))
-                st.success(f"Batch completato. Frame completi: {ok}/{int(cycles)}")
+                cfg = {
+                    "db_path": db_path,
+                    "activity_code": st.session_state.activity_code,
+                    "controller_ip": st.session_state.controller_ip,
+                    "hw_version": st.session_state.version_info.get("hw"),
+                    "fw_version": st.session_state.version_info.get("fw"),
+                    "poll_interval_sec": float(poll_interval_sec),
+                    "mode": mode_key,
+                    "max_cycles": max_cycles,
+                    "duration_sec": duration_sec,
+                    "sensor_thresholds": sensor_thresholds,
+                    "use_mock": use_mock,
+                    "port": int(port),
+                    "timeout_sec": float(timeout_sec),
+                    "mock_seed": mock_seed,
+                    "mock_timeout_rate": float(mock_timeout_rate),
+                    "mock_ser_rate": float(mock_ser_rate),
+                    "mock_scenario": mock_scenario,
+                }
+                stop_event = threading.Event()
+                worker = threading.Thread(
+                    target=run_batch_worker,
+                    args=(cfg, stop_event, st.session_state.batch_state),
+                    daemon=True,
+                )
+                st.session_state.batch_stop_event = stop_event
+                st.session_state.batch_thread = worker
+                worker.start()
+                st.success("Batch avviato in background.")
+
+        batch_state = st.session_state.batch_state
+        st.markdown("##### Stato batch")
+        sb1, sb2, sb3 = st.columns(3)
+        sb1.metric("Running", "SI" if batch_state.get("running") else "NO")
+        sb2.metric("Cicli eseguiti", str(batch_state.get("current_cycle") or 0))
+        sb3.metric("Frame completi", str(batch_state.get("completed_frames") or 0))
+
+        elapsed = 0.0
+        if batch_state.get("start_monotonic") is not None:
+            elapsed = max(0.0, time.time() - float(batch_state["start_monotonic"]))
+
+        timer_cols = st.columns(2)
+        with timer_cols[0]:
+            st.markdown(
+                f'<div class="timer-card"><div class="clock-label">Tempo trascorso</div><div class="clock-value">{format_hhmmss(elapsed)}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+        with timer_cols[1]:
+            if batch_state.get("mode") in {"timer", "timer_or_threshold"} and (batch_state.get("duration_sec") or 0) > 0:
+                remaining = max(0.0, float(batch_state["duration_sec"]) - elapsed)
+                st.markdown(
+                    f'<div class="timer-card"><div class="clock-label">Countdown timer</div><div class="clock-value">{format_hhmmss(remaining)}</div></div>',
+                    unsafe_allow_html=True,
+                )
+                progress = min(1.0, elapsed / float(batch_state["duration_sec"]))
+                st.progress(progress, text=f"Timer batch: {format_hhmmss(elapsed)} / {format_hhmmss(batch_state['duration_sec'])}")
+            else:
+                st.markdown(
+                    '<div class="timer-card"><div class="clock-label">Countdown timer</div><div class="clock-value">--:--:--</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.caption(
+            f"Attivita: {batch_state.get('activity_code') or '-'} | Start: {batch_state.get('start_utc') or '-'} | Stop reason: {batch_state.get('stop_reason') or '-'}"
+        )
+
+        if batch_state.get("threshold_event"):
+            st.error(f"Arresto per soglia: {batch_state.get('stop_reason')}")
+
+        if batch_state.get("last_values") is not None:
+            st.caption(
+                f"Ultimo frame: {batch_state.get('last_values')} | Latency: {batch_state.get('last_latency_ms')} ms | Error: {batch_state.get('last_error') or '-'}"
+            )
+
+        st.markdown("##### Storico esecuzioni batch")
+        run_rows = recent_batch_runs(db_path, limit=30)
+        if run_rows:
+            runs_df = pd.DataFrame([dict(r) for r in run_rows])
+            st.dataframe(runs_df, use_container_width=True)
+        else:
+            st.info("Nessuna esecuzione batch storicizzata.")
 
     with right:
         st.subheader("Ultimi dati")
@@ -230,13 +521,103 @@ with tab1:
             df = pd.DataFrame([dict(r) for r in rows]).sort_values("id")
             st.dataframe(df.tail(20), use_container_width=True)
 
-            sensor_col = st.selectbox(
-                "Sensore da graficare", ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
-            )
-            chart_df = df[["ts", sensor_col]].copy().rename(columns={"ts": "timestamp", sensor_col: "value"})
-            chart_df = chart_df.dropna().set_index("timestamp")
-            if not chart_df.empty:
-                st.line_chart(chart_df)
+            st.markdown("#### Andamento multi-sensore")
+            sensor_cols = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+            sensor_labels = {
+                "s1": "Pannello 1",
+                "s2": "Pannello 2",
+                "s3": "Pannello 3",
+                "s4": "Pannello 4",
+                "s5": "Pannello 5",
+                "s6": "Pannello 6",
+                "s7": "Sonda Ispezione 1",
+                "s8": "Sonda Ispezione 2",
+            }
+
+            plot_df = df[["ts", *sensor_cols]].copy()
+            plot_df["timestamp"] = pd.to_datetime(plot_df["ts"], errors="coerce", utc=True)
+            plot_df = plot_df.dropna(subset=["timestamp"])
+            for col in sensor_cols:
+                plot_df[col] = pd.to_numeric(plot_df[col], errors="coerce")
+
+            long_df = plot_df.melt(
+                id_vars=["timestamp"],
+                value_vars=sensor_cols,
+                var_name="sensor",
+                value_name="temperatura_c",
+            ).dropna(subset=["temperatura_c"])
+
+            if not long_df.empty:
+                long_df["sensor"] = long_df["sensor"].map(sensor_labels)
+                color_domain = [
+                    "Pannello 1",
+                    "Pannello 2",
+                    "Pannello 3",
+                    "Pannello 4",
+                    "Pannello 5",
+                    "Pannello 6",
+                    "Sonda Ispezione 1",
+                    "Sonda Ispezione 2",
+                ]
+                color_range = [
+                    "#1d4ed8",
+                    "#0284c7",
+                    "#0891b2",
+                    "#16a34a",
+                    "#65a30d",
+                    "#ca8a04",
+                    "#ea580c",
+                    "#be123c",
+                ]
+                color_map = dict(zip(color_domain, color_range))
+
+                filter_mode = st.radio(
+                    "Filtro sensori",
+                    options=["Tutti", "Solo pannelli", "Solo sonde", "Selezione manuale"],
+                    horizontal=True,
+                )
+
+                default_sensor_view = color_domain
+                if filter_mode == "Solo pannelli":
+                    default_sensor_view = color_domain[:6]
+                elif filter_mode == "Solo sonde":
+                    default_sensor_view = color_domain[6:]
+                elif filter_mode == "Selezione manuale":
+                    selected_manual = st.multiselect(
+                        "Scegli sensori da mostrare",
+                        options=color_domain,
+                        default=color_domain,
+                    )
+                    default_sensor_view = selected_manual
+
+                filtered_df = long_df[long_df["sensor"].isin(default_sensor_view)].copy()
+                if filtered_df.empty:
+                    st.warning("Nessun sensore selezionato.")
+                else:
+                    selected_colors = [color_map[s] for s in default_sensor_view]
+                    multi_chart = (
+                        alt.Chart(filtered_df)
+                        .mark_line(strokeWidth=2)
+                        .encode(
+                            x=alt.X("timestamp:T", title="Tempo"),
+                            y=alt.Y("temperatura_c:Q", title="Temperatura (C)"),
+                            color=alt.Color(
+                                "sensor:N",
+                                title="Sensori",
+                                scale=alt.Scale(domain=default_sensor_view, range=selected_colors),
+                            ),
+                            tooltip=[
+                                alt.Tooltip("timestamp:T", title="Timestamp"),
+                                alt.Tooltip("sensor:N", title="Sensore"),
+                                alt.Tooltip("temperatura_c:Q", title="Temperatura (C)", format=".2f"),
+                            ],
+                        )
+                        .properties(height=340)
+                        .interactive()
+                    )
+                    st.altair_chart(multi_chart, use_container_width=True)
+            else:
+                st.info("Dati insufficienti per il grafico multi-sensore.")
 
     st.caption("Nota: se l'app Android originale e questo collector interrogano insieme lo stesso controller, possono esserci interferenze.")
 

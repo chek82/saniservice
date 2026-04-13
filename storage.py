@@ -37,6 +37,24 @@ def init_db(db_path: str) -> None:
         col_names = {c[1] for c in cols}
         if "activity_code" not in col_names:
             conn.execute("ALTER TABLE sensor_frames ADD COLUMN activity_code TEXT")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS batch_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                activity_code TEXT,
+                mode TEXT,
+                start_utc TEXT,
+                end_utc TEXT,
+                duration_sec INTEGER,
+                cycles_executed INTEGER,
+                completed_frames INTEGER,
+                stop_reason TEXT,
+                threshold_event INTEGER,
+                controller_ip TEXT
+            )
+            """
+        )
         conn.commit()
 
 
@@ -109,5 +127,46 @@ def frames_for_activity(db_path: str, activity_code: str, limit: int = 5000) -> 
             LIMIT ?
             """,
             (activity_code, limit),
+        ).fetchall()
+    return rows
+
+
+def save_batch_run(db_path: str, run: Dict[str, object]) -> None:
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO batch_runs (
+                activity_code, mode, start_utc, end_utc, duration_sec,
+                cycles_executed, completed_frames, stop_reason, threshold_event, controller_ip
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.get("activity_code"),
+                run.get("mode"),
+                run.get("start_utc"),
+                run.get("end_utc"),
+                run.get("duration_sec"),
+                run.get("cycles_executed"),
+                run.get("completed_frames"),
+                run.get("stop_reason"),
+                1 if run.get("threshold_event") else 0,
+                run.get("controller_ip"),
+            ),
+        )
+        conn.commit()
+
+
+def recent_batch_runs(db_path: str, limit: int = 100) -> List[sqlite3.Row]:
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM batch_runs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
         ).fetchall()
     return rows
