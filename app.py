@@ -8,7 +8,10 @@ import streamlit as st
 
 try:
     from streamlit_autorefresh import st_autorefresh  # type: ignore[import-not-found]
+    AUTOREFRESH_AVAILABLE = True
 except ImportError:
+    AUTOREFRESH_AVAILABLE = False
+
     def st_autorefresh(*args, **kwargs):
         return None
 
@@ -56,6 +59,25 @@ st.markdown(
     }
     .clock-label {font-size: 0.8rem; color: #475569;}
     .clock-value {font-size: 1.35rem; font-weight: 700; color: #0f172a;}
+    .temp-circle-grid {
+        display: grid;
+        grid-template-columns: repeat(8, minmax(82px, 1fr));
+        gap: 8px;
+        margin-top: 8px;
+        margin-bottom: 4px;
+    }
+    .temp-circle {
+        border-radius: 999px;
+        min-height: 82px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #ffffff;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.12);
+    }
+    .temp-circle-label {font-size: 0.75rem; opacity: 0.95;}
+    .temp-circle-value {font-size: 1rem; font-weight: 700;}
     div.stButton > button[kind="primary"] {
         background-color: #dc2626;
         border-color: #b91c1c;
@@ -142,6 +164,78 @@ def format_hhmmss(total_seconds: float) -> str:
     m = (sec % 3600) // 60
     s = sec % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def parse_utc(ts: str | None) -> pd.Timestamp | None:
+    if not ts:
+        return None
+    dt = pd.to_datetime(ts, errors="coerce", utc=True)
+    if pd.isna(dt):
+        return None
+    return dt
+
+
+def time_ticks_10min(df: pd.DataFrame, col_name: str = "timestamp") -> list:
+    if df.empty or col_name not in df.columns:
+        return []
+    tmin = df[col_name].min()
+    tmax = df[col_name].max()
+    if pd.isna(tmin) or pd.isna(tmax):
+        return []
+    start = pd.Timestamp(tmin).floor("10min")
+    end = pd.Timestamp(tmax).ceil("10min")
+    ticks = pd.date_range(start=start, end=end, freq="10min", tz="UTC")
+    return [t.to_pydatetime() for t in ticks]
+
+
+def render_instant_temp_circles(values: list | None) -> None:
+    labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S1", "S2"]
+    if not values:
+        values = [None] * 8
+    safe_values = list(values)[:8]
+    while len(safe_values) < 8:
+        safe_values.append(None)
+
+    def color_for(v):
+        if v is None:
+            return "#94a3b8"
+        try:
+            x = float(v)
+        except Exception:
+            return "#94a3b8"
+        if x < 40:
+            return "#0284c7"
+        if x < 50:
+            return "#16a34a"
+        if x < 60:
+            return "#ca8a04"
+        return "#dc2626"
+
+    html = ""
+    for idx, v in enumerate(safe_values):
+        txt = "--" if v is None else f"{v}°"
+        html += (
+            f'<div class="temp-circle" style="background:{color_for(v)}">'
+            f'<div class="temp-circle-label">{labels[idx]}</div>'
+            f'<div class="temp-circle-value">{txt}</div>'
+            "</div>"
+        )
+
+    st.markdown(f'<div class="temp-circle-grid">{html}</div>', unsafe_allow_html=True)
+
+
+def render_instant_temp_circles_idle() -> None:
+    # In stato idle mostriamo i canali in grigio per evitare ambiguita su letture non correnti.
+    labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S1", "S2"]
+    html = ""
+    for label in labels:
+        html += (
+            '<div class="temp-circle" style="background:#94a3b8">'
+            f'<div class="temp-circle-label">{label}</div>'
+            '<div class="temp-circle-value">--</div>'
+            "</div>"
+        )
+    st.markdown(f'<div class="temp-circle-grid">{html}</div>', unsafe_allow_html=True)
 
 
 def make_client_from_config(cfg: dict) -> UdpControllerClient | MockUdpControllerClient:
@@ -292,8 +386,18 @@ if use_mock:
 else:
     client = UdpControllerClient(port=int(port), timeout_sec=float(timeout_sec))
 
-if st.session_state.batch_state.get("running") and auto_refresh_batch:
-    st_autorefresh(interval=1000, key="batch_live_refresh")
+batch_thread = st.session_state.get("batch_thread")
+batch_running = bool(st.session_state.batch_state.get("running"))
+if batch_running and batch_thread is not None and not batch_thread.is_alive():
+    st.session_state.batch_state["running"] = False
+    batch_running = False
+
+if batch_running and auto_refresh_batch:
+    if AUTOREFRESH_AVAILABLE:
+        st_autorefresh(interval=1000, key="batch_live_refresh")
+    elif not st.session_state.get("autorefresh_missing_warned", False):
+        st.warning("Auto-refresh non disponibile: installa/aggiorna streamlit-autorefresh.")
+        st.session_state.autorefresh_missing_warned = True
 
 tab1, tab2 = st.tabs(["Collector UDP", "Report Sanificazione"])
 
@@ -410,7 +514,7 @@ with tab1:
         duration_sec = (duration_hours * 3600) + (duration_minutes * 60)
 
         start_col, stop_col = st.columns(2)
-        is_running = bool(st.session_state.batch_state.get("running"))
+        is_running = batch_running
         with start_col:
             start_batch = st.button("4) Avvia batch", use_container_width=True, disabled=is_running)
         with stop_col:
@@ -514,17 +618,72 @@ with tab1:
         run_rows = recent_batch_runs(db_path, limit=30)
         if run_rows:
             runs_df = pd.DataFrame([dict(r) for r in run_rows])
-            st.dataframe(runs_df, use_container_width=True)
+            runs_view = runs_df[
+                [
+                    "id",
+                    "activity_code",
+                    "mode",
+                    "start_utc",
+                    "end_utc",
+                    "cycles_executed",
+                    "completed_frames",
+                    "stop_reason",
+                ]
+            ].copy()
+            selected_event = st.dataframe(
+                runs_view,
+                use_container_width=True,
+                hide_index=True,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="batch_runs_select_table",
+            )
+            selected_rows = selected_event.get("selection", {}).get("rows", []) if isinstance(selected_event, dict) else []
+            if selected_rows:
+                selected_idx = int(selected_rows[0])
+                st.session_state["selected_batch_run_id"] = int(runs_view.iloc[selected_idx]["id"])
+            elif "selected_batch_run_id" not in st.session_state:
+                st.session_state["selected_batch_run_id"] = int(runs_view.iloc[0]["id"])
         else:
             st.info("Nessuna esecuzione batch storicizzata.")
 
     with right:
         st.subheader("Ultimi dati")
-        rows = recent_frames(db_path, limit=300)
+        rows = []
+        selected_run_id = st.session_state.get("selected_batch_run_id")
+        selected_run = None
+        run_rows_for_right = recent_batch_runs(db_path, limit=200)
+        if selected_run_id is not None and run_rows_for_right:
+            runs_df_right = pd.DataFrame([dict(r) for r in run_rows_for_right])
+            selected_match = runs_df_right[runs_df_right["id"] == selected_run_id]
+            if not selected_match.empty:
+                selected_run = selected_match.iloc[0]
+                sel_activity = selected_run.get("activity_code")
+                sel_start = parse_utc(selected_run.get("start_utc"))
+                sel_end = parse_utc(selected_run.get("end_utc"))
+                activity_rows = frames_for_activity(db_path, sel_activity, limit=6000) if sel_activity else []
+                if activity_rows:
+                    tmp_df = pd.DataFrame([dict(r) for r in activity_rows])
+                    tmp_df["timestamp"] = pd.to_datetime(tmp_df["ts"], errors="coerce", utc=True)
+                    tmp_df = tmp_df.dropna(subset=["timestamp"])
+                    if sel_start is not None:
+                        tmp_df = tmp_df[tmp_df["timestamp"] >= sel_start]
+                    if sel_end is not None:
+                        tmp_df = tmp_df[tmp_df["timestamp"] <= sel_end]
+                    rows = [r for r in tmp_df.to_dict("records")]
+
+        if not rows:
+            rows = [dict(r) for r in recent_frames(db_path, limit=300)]
+
+        if selected_run is not None:
+            st.caption(
+                f"Vista filtrata su run #{int(selected_run['id'])} | attivita={selected_run.get('activity_code') or '-'}"
+            )
+
         if not rows:
             st.info("Nessun dato salvato ancora")
         else:
-            df = pd.DataFrame([dict(r) for r in rows]).sort_values("id")
+            df = pd.DataFrame(rows).sort_values("id")
             st.dataframe(df.tail(20), use_container_width=True)
 
             st.markdown("#### Andamento multi-sensore")
@@ -605,7 +764,14 @@ with tab1:
                         alt.Chart(filtered_df)
                         .mark_line(strokeWidth=2)
                         .encode(
-                            x=alt.X("timestamp:T", title="Tempo"),
+                            x=alt.X(
+                                "timestamp:T",
+                                title="Tempo",
+                                axis=alt.Axis(
+                                    format="%H:%M",
+                                    values=time_ticks_10min(filtered_df, "timestamp") or alt.Undefined,
+                                ),
+                            ),
                             y=alt.Y("temperatura_c:Q", title="Temperatura (C)"),
                             color=alt.Color(
                                 "sensor:N",
@@ -613,7 +779,7 @@ with tab1:
                                 scale=alt.Scale(domain=default_sensor_view, range=selected_colors),
                             ),
                             tooltip=[
-                                alt.Tooltip("timestamp:T", title="Timestamp"),
+                                alt.Tooltip("timestamp:T", title="Ora", format="%H:%M:%S"),
                                 alt.Tooltip("sensor:N", title="Sensore"),
                                 alt.Tooltip("temperatura_c:Q", title="Temperatura (C)", format=".2f"),
                             ],
@@ -624,6 +790,69 @@ with tab1:
                     st.altair_chart(multi_chart, use_container_width=True)
             else:
                 st.info("Dati insufficienti per il grafico multi-sensore.")
+
+    if batch_running and batch_state.get("activity_code"):
+        st.markdown("#### Andamento live batch")
+        live_rows = frames_for_activity(db_path, batch_state.get("activity_code"), limit=1200)
+        live_df = pd.DataFrame([dict(r) for r in live_rows]) if live_rows else pd.DataFrame()
+        if not live_df.empty:
+            live_df["timestamp"] = pd.to_datetime(live_df["ts"], errors="coerce", utc=True)
+            live_df = live_df.dropna(subset=["timestamp"]).sort_values("timestamp")
+            sensor_cols = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+            for col in sensor_cols:
+                live_df[col] = pd.to_numeric(live_df[col], errors="coerce")
+            sensor_labels = {
+                "s1": "Pannello 1",
+                "s2": "Pannello 2",
+                "s3": "Pannello 3",
+                "s4": "Pannello 4",
+                "s5": "Pannello 5",
+                "s6": "Pannello 6",
+                "s7": "Sonda Ispezione 1",
+                "s8": "Sonda Ispezione 2",
+            }
+            live_long = live_df.melt(
+                id_vars=["timestamp"],
+                value_vars=sensor_cols,
+                var_name="sensor",
+                value_name="temperatura_c",
+            ).dropna(subset=["temperatura_c"])
+            live_long["sensor"] = live_long["sensor"].map(sensor_labels)
+            if not live_long.empty:
+                live_ticks = time_ticks_10min(live_long, "timestamp")
+                live_chart = (
+                    alt.Chart(live_long)
+                    .mark_line(strokeWidth=2)
+                    .encode(
+                        x=alt.X(
+                            "timestamp:T",
+                            title="Tempo",
+                            axis=alt.Axis(format="%H:%M", values=live_ticks if live_ticks else alt.Undefined),
+                        ),
+                        y=alt.Y("temperatura_c:Q", title="Temperatura (C)"),
+                        color=alt.Color("sensor:N", title="Sensori"),
+                    )
+                    .properties(height=260)
+                    .interactive()
+                )
+                st.altair_chart(live_chart, use_container_width=True)
+                st.dataframe(
+                    live_df[["timestamp", *sensor_cols]].sort_values("timestamp").tail(60),
+                    use_container_width=True,
+                    height=360,
+                )
+
+    st.markdown("#### Temperature istantanee (6 pannelli + 2 sonde)")
+    if not batch_running:
+        render_instant_temp_circles_idle()
+    else:
+        instant_values = batch_state.get("last_values")
+        if instant_values is None:
+            latest = recent_frames(db_path, limit=1)
+            if latest:
+                row = dict(latest[0])
+                instant_values = [row.get(f"s{i}") for i in range(1, 9)]
+        render_instant_temp_circles(instant_values)
 
     st.caption("Nota: se l'app Android originale e questo collector interrogano insieme lo stesso controller, possono esserci interferenze.")
 
