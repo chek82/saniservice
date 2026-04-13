@@ -27,6 +27,12 @@ from udp_client import MockUdpControllerClient, UdpControllerClient
 
 st.set_page_config(page_title="UDP Discovery + Report Sanificazione", layout="wide")
 
+header_left, header_center, header_right = st.columns([1, 4, 1])
+with header_left:
+    st.image("assets/images/saniservice_antitarlo.png", width=300)
+with header_right:
+    st.image("assets/images/saniservice.png", width=150)
+
 st.markdown(
     """
     <style>
