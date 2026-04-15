@@ -1,4 +1,7 @@
-﻿from datetime import date, datetime
+﻿import base64
+from datetime import date, datetime
+import hashlib
+import hmac
 import json
 from pathlib import Path
 import socket
@@ -39,6 +42,76 @@ st.set_page_config(
 
 APP_SETTINGS_PATH = Path("app_discovery/data/app_settings.json")
 DRIVE_CACHE_DIR = Path("app_discovery/data/drive_cache")
+
+APP_AUTH_PBKDF2_ITERATIONS = 200000
+APP_AUTH_SALT_B64 = "ICXnAqhR/6XP7px6JsgTcQ=="
+APP_AUTH_HASH_B64 = "lNwzg1owgIVJBl+4JyFCEnDuLfy+i2WofRraszSlBe4="
+APP_AUTH_CACHE_TTL_SEC = 60 * 60 * 12
+
+
+def _hash_password_pbkdf2(password: str, salt_b64: str, iterations: int) -> bytes:
+    salt = base64.b64decode(salt_b64.encode("utf-8"))
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+
+
+def _verify_app_password(candidate: str) -> bool:
+    try:
+        expected = base64.b64decode(APP_AUTH_HASH_B64.encode("utf-8"))
+        current = _hash_password_pbkdf2(candidate, APP_AUTH_SALT_B64, APP_AUTH_PBKDF2_ITERATIONS)
+        return hmac.compare_digest(current, expected)
+    except Exception:
+        return False
+
+
+@st.cache_resource
+def _auth_cache_store() -> dict:
+    return {}
+
+
+def _auth_fingerprint() -> str:
+    try:
+        headers = st.context.headers
+        ua = str(headers.get("User-Agent", ""))
+        host = str(headers.get("Host", ""))
+        lang = str(headers.get("Accept-Language", ""))
+        return f"{host}|{ua}|{lang}"
+    except Exception:
+        return "local-client"
+
+
+def _set_cached_auth_authenticated(fingerprint: str) -> None:
+    cache = _auth_cache_store()
+    cache[fingerprint] = time.time() + APP_AUTH_CACHE_TTL_SEC
+
+
+def _is_cached_auth_authenticated(fingerprint: str) -> bool:
+    cache = _auth_cache_store()
+    expire_at = cache.get(fingerprint)
+    if not expire_at:
+        return False
+    if float(expire_at) < time.time():
+        cache.pop(fingerprint, None)
+        return False
+    return True
+
+
+def _clear_cached_auth_authenticated(fingerprint: str) -> None:
+    cache = _auth_cache_store()
+    cache.pop(fingerprint, None)
+
+
+def _render_auth_gate() -> None:
+    st.markdown("### Accesso Applicazione")
+    st.caption("Inserisci la password per continuare.")
+    pwd = st.text_input("Password", type="password", key="app_login_password")
+    login = st.button("Accedi", type="primary", use_container_width=True, key="app_login_button")
+    if login:
+        if _verify_app_password(pwd):
+            st.session_state.app_authenticated = True
+            _set_cached_auth_authenticated(_auth_fingerprint())
+            st.rerun()
+        else:
+            st.error("Password non valida.")
 
 
 def load_app_settings() -> dict:
@@ -153,6 +226,19 @@ def _build_json_file_metadata_df(files: list[Path]) -> pd.DataFrame:
         )
     return pd.DataFrame(rows)
 
+
+if "app_authenticated" not in st.session_state:
+    st.session_state.app_authenticated = False
+
+if not st.session_state.app_authenticated and _is_cached_auth_authenticated(_auth_fingerprint()):
+    st.session_state.app_authenticated = True
+
+if not st.session_state.app_authenticated:
+    left, center, right = st.columns([2, 2.2, 2])
+    with center:
+        _render_auth_gate()
+    st.stop()
+
 header_left, header_center, header_right = st.columns([1, 4, 1])
 with header_left:
     st.image("assets/images/saniservice_antitarlo.png", width=300)
@@ -225,6 +311,16 @@ st.markdown(
     div[class*="st-key-drive_file_search_query"] {
         max-width: 200px;
         margin-left: auto;
+    }
+    div[class*="st-key-download_report_pdf_btn"] div.stDownloadButton > button {
+        background-color: #16a34a;
+        border-color: #15803d;
+        color: #ffffff;
+    }
+    div[class*="st-key-download_report_pdf_btn"] div.stDownloadButton > button:hover {
+        background-color: #15803d;
+        border-color: #166534;
+        color: #ffffff;
     }
     </style>
     """,
@@ -732,6 +828,11 @@ mock_ser_rate = 0.05
 mock_scenario = "normal"
 
 with st.sidebar:
+    if st.button("Logout", use_container_width=True, key="logout_btn"):
+        _clear_cached_auth_authenticated(_auth_fingerprint())
+        st.session_state.app_authenticated = False
+        st.rerun()
+
     show_advanced_sections = st.toggle(
         "Advance",
         value=st.session_state.get("show_advanced_sections", False),
@@ -1757,6 +1858,7 @@ with tab_report:
                 file_name=f"report_sanificazione_{data_intervento.isoformat()}.pdf",
                 mime="application/pdf",
                 use_container_width=True,
+                key="download_report_pdf_btn",
             )
 
 if show_advanced_sections:
