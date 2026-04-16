@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <title>Guida - Tab Report Sanificazione</title>
+  <style>
+    body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #1f2937; line-height: 1.45; }
+    h1 { color: #0f172a; font-size: 20pt; margin-bottom: 6px; }
+    h2 { color: #0f172a; font-size: 14pt; margin-top: 18px; margin-bottom: 8px; }
+    h3 { color: #1e293b; font-size: 12pt; margin-top: 14px; margin-bottom: 6px; }
+    .subtitle { color: #475569; margin-bottom: 16px; }
+    .box {
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+    }
+    .shot {
+      border: 1px dashed #94a3b8;
+      background: #f8fafc;
+      color: #334155;
+      padding: 14px;
+      margin: 8px 0 16px 0;
+      text-align: center;
+    }
+    .note { color: #0f172a; background: #ecfeff; border-left: 4px solid #0891b2; padding: 8px 10px; margin: 10px 0; }
+    ul, ol { margin-top: 6px; margin-bottom: 8px; }
+    code { background: #f1f5f9; padding: 1px 4px; border-radius: 3px; }
+    hr { border: 0; border-top: 1px solid #cbd5e1; margin: 16px 0; }
+  </style>
+</head>
+<body>
+  <h1>Guida Operativa - Tab Report Sanificazione</h1>
+  <div class="subtitle">Applicazione Streamlit Saniservice - Versione operativa (Aprile 2026)</div>
+
+  <div class="note">
+    Questo documento e dedicato esclusivamente alla sezione <b>Report Sanificazione</b>.
+    Include i punti dove inserire i printscreen operativi.
+  </div>
+
+  <h2>1. Scopo della tab</h2>
+  <p>
+    La tab <b>Report Sanificazione</b> permette di:
+  </p>
+  <ul>
+    <li>inserire l'anagrafica intervento;</li>
+    <li>caricare i dati termici da diverse sorgenti (CSV, Manuale, Storico collector, Import from Drive);</li>
+    <li>calcolare automaticamente conformita termica;</li>
+    <li>visualizzare grafici e tabella misurazioni;</li>
+    <li>generare e scaricare il report PDF con sezioni opzionali.</li>
+  </ul>
+
+  <div class="shot">
+    [PRINTSCREEN 01] - Vista generale della Tab Report Sanificazione
+    <br/>Suggerimento file: <code>docs/images/report-01-overview.png</code>
+  </div>
+
+  <h2>2. Anagrafica intervento</h2>
+  <p>Compilare i campi principali:</p>
+  <ul>
+    <li>Cliente</li>
+    <li>Indirizzo</li>
+    <li>Data intervento</li>
+    <li>Luogo Intervento (<code>Sede Saniservice</code> o <code>Sede Cliente</code>)</li>
+    <li>Tecnico</li>
+    <li>Codice intervento</li>
+    <li>Oggetto trattato</li>
+    <li>Note</li>
+  </ul>
+
+  <div class="shot">
+    [PRINTSCREEN 02] - Sezione Anagrafica intervento compilata
+    <br/>Suggerimento file: <code>docs/images/report-02-anagrafica.png</code>
+  </div>
+
+  <h2>3. Selezione sorgente dati</h2>
+  <p>
+    Nella sezione <b>Dati termici</b> selezionare la sorgente da <code>Sorgente dati</code>:
+  </p>
+  <ol>
+    <li>CSV</li>
+    <li>Manuale</li>
+    <li>Storico collector</li>
+    <li>Import from Drive</li>
+  </ol>
+
+  <h3>3.1 CSV</h3>
+  <p>Caricare file con colonne <code>tempo_min</code> e <code>temperatura_c</code>.</p>
+  <div class="shot">
+    [PRINTSCREEN 03] - Upload CSV e anteprima dati
+    <br/>Suggerimento file: <code>docs/images/report-03-csv.png</code>
+  </div>
+
+  <h3>3.2 Manuale</h3>
+  <p>Inserire righe nel formato: <code>tempo_min,temperatura_c</code>.</p>
+
+  <h3>3.3 Storico collector</h3>
+  <p>
+    Selezionare codice attivita e metrica dal collector.
+    Le metriche disponibili includono media, massimo e singolo sensore.
+  </p>
+
+  <h3>3.4 Import from Drive</h3>
+  <p>
+    Scegliere origine:
+    <code>Cartella locale</code> oppure <code>URL Google Drive</code>.
+  </p>
+  <ul>
+    <li>Con URL: usare il pulsante <b>Scarica/aggiorna da URL</b>.</li>
+    <li>Selezionare file dalla tabella <b>File disponibili</b>.</li>
+    <li>Filtrare/ordinare e usare paginazione se necessario.</li>
+  </ul>
+
+  <div class="shot">
+    [PRINTSCREEN 04] - Import from Drive (URL) con tabella file disponibili
+    <br/>Suggerimento file: <code>docs/images/report-04-drive-url.png</code>
+  </div>
+
+  <h2>4. Metrica temperatura da JSON</h2>
+  <p>Le opzioni includono:</p>
+  <ul>
+    <li><code>media_sensori</code></li>
+    <li><code>max_sensori</code></li>
+    <li><code>p1...p6</code></li>
+    <li><code>s1</code>, <code>s2</code></li>
+    <li><code>Sonde S1 e S2</code></li>
+  </ul>
+
+  <div class="box">
+    Se viene selezionata <b>Sonde S1 e S2</b>, il grafico app mostra entrambe le linee.
+    I calcoli automatici usano la media S1/S2.
+  </div>
+
+  <h2>5. Verifica automatica</h2>
+  <p>Configurare:</p>
+  <ul>
+    <li><b>Soglia letale (C)</b></li>
+    <li><b>Minuti minimi sopra soglia</b></li>
+  </ul>
+  <p>Il sistema calcola:</p>
+  <ul>
+    <li>Temperatura massima</li>
+    <li>Minuti sopra soglia</li>
+    <li>Soglia raggiunta (SI/NO)</li>
+    <li>Esito (CONFORME/NON CONFORME)</li>
+  </ul>
+
+  <div class="shot">
+    [PRINTSCREEN 05] - KPI e grafico tempo/temperatura
+    <br/>Suggerimento file: <code>docs/images/report-05-analisi.png</code>
+  </div>
+
+  <h2>6. Generazione PDF</h2>
+  <p>Dopo la tabella misurazioni, usare i flag:</p>
+  <ul>
+    <li>Grafico Temperatura</li>
+    <li>Tabella Temperatura</li>
+    <li>Grafico 8 Sensori</li>
+  </ul>
+  <p>
+    Il pulsante <b>Scarica report PDF</b> genera il documento in base ai flag selezionati.
+  </p>
+
+  <div class="shot">
+    [PRINTSCREEN 06] - Flag PDF + pulsante Scarica report PDF
+    <br/>Suggerimento file: <code>docs/images/report-06-pdf-options.png</code>
+  </div>
+
+  <h2>7. Contenuti aggiuntivi nel PDF</h2>
+  <p>Il report include anche:</p>
+  <ul>
+    <li>Ora prima misurazione</li>
+    <li>Ora fine misurazione</li>
+    <li>Durata intervento</li>
+  </ul>
+
+  <h2>8. Troubleshooting rapido</h2>
+  <ul>
+    <li><b>Percorso cartella non valido</b>: verificare se e path locale o URL e selezionare l'origine corretta.</li>
+    <li><b>Nessun file JSON</b>: verificare cartella/link e rieseguire aggiornamento da URL.</li>
+    <li><b>Dati vuoti nel report</b>: controllare metrica selezionata e presenza campi nei frame JSON.</li>
+  </ul>
+
+  <hr/>
+  <p><b>Documento:</b> Guida Tab Report Sanificazione</p>
+  <p><b>Percorso consigliato screenshot:</b> <code>app_discovery/docs/images/</code></p>
+</body>
+</html>
