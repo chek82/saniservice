@@ -1,12 +1,16 @@
 ﻿import base64
+import csv
 from datetime import date, datetime
 import hashlib
 import hmac
+from io import StringIO
 import json
 from pathlib import Path
 import socket
 import threading
 import time
+from urllib.parse import parse_qs, urlparse
+from urllib.request import urlopen
 
 import altair as alt
 import pandas as pd
@@ -48,6 +52,12 @@ APP_AUTH_SALT_B64 = "ICXnAqhR/6XP7px6JsgTcQ=="
 APP_AUTH_HASH_B64 = "lNwzg1owgIVJBl+4JyFCEnDuLfy+i2WofRraszSlBe4="
 APP_AUTH_CACHE_TTL_SEC = 60 * 60 * 12
 
+# URL Google Sheet cifrato con chiave applicativa (password utente).
+APP_REMOTE_CONFIG_URL_ENC = (
+    "OxUaGUIIHA43Dg0aH1VcTjQNC0dSXV4OIBEcDFBWQEk2BBoaHlYcEAJVJxx1SgQVBTMZK1xLRkghVwdbUH9GRTo+CQYHS2QUOCQULWZ8V1E6VAlGVFZaVQ=="
+)
+APP_REMOTE_CONFIG_KEY = "Sani123!"
+
 
 def _hash_password_pbkdf2(password: str, salt_b64: str, iterations: int) -> bytes:
     salt = base64.b64decode(salt_b64.encode("utf-8"))
@@ -61,6 +71,47 @@ def _verify_app_password(candidate: str) -> bool:
         return hmac.compare_digest(current, expected)
     except Exception:
         return False
+
+
+def _xor_decrypt_b64(cipher_text_b64: str, key: str) -> str:
+    cipher_bytes = base64.b64decode(cipher_text_b64.encode("utf-8"))
+    key_bytes = key.encode("utf-8")
+    if not key_bytes:
+        raise ValueError("Chiave di decrittazione non valida")
+    plain = bytes([b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(cipher_bytes)])
+    return plain.decode("utf-8")
+
+
+def _sheet_csv_url_from_sheet_url(sheet_url: str) -> str:
+    parsed = urlparse(sheet_url)
+    query = parse_qs(parsed.query or "")
+    gid = query.get("gid", ["0"])[0]
+
+    path = parsed.path
+    if "/edit" in path:
+        path = path.split("/edit", 1)[0]
+
+    return f"{parsed.scheme}://{parsed.netloc}{path}/export?format=csv&gid={gid}"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_remote_kv_config() -> dict[str, str]:
+    try:
+        sheet_url = _xor_decrypt_b64(APP_REMOTE_CONFIG_URL_ENC, APP_REMOTE_CONFIG_KEY)
+        csv_url = _sheet_csv_url_from_sheet_url(sheet_url)
+        with urlopen(csv_url, timeout=8) as resp:  # nosec B310 - trusted fixed host and path
+            raw = resp.read().decode("utf-8-sig", errors="ignore")
+
+        rows = csv.DictReader(StringIO(raw))
+        out: dict[str, str] = {}
+        for row in rows:
+            key = str(row.get("Key", "")).strip()
+            value = str(row.get("Value", "")).strip()
+            if key:
+                out[key] = value
+        return out
+    except Exception:
+        return {}
 
 
 @st.cache_resource
@@ -120,6 +171,8 @@ def load_app_settings() -> dict:
         "drive_folder_url": "",
         "report_source_mode": "Import from Drive",
         "drive_import_mode": "URL Google Drive",
+        "report_threshold_rule_c": 55.0,
+        "report_required_min_above": 30.0,
     }
     try:
         if not APP_SETTINGS_PATH.exists():
@@ -138,6 +191,10 @@ def load_app_settings() -> dict:
             "drive_folder_url": drive_folder_url,
             "report_source_mode": str(raw.get("report_source_mode", defaults["report_source_mode"])).strip(),
             "drive_import_mode": str(raw.get("drive_import_mode", defaults["drive_import_mode"])).strip(),
+            "report_threshold_rule_c": float(raw.get("report_threshold_rule_c", defaults["report_threshold_rule_c"])),
+            "report_required_min_above": float(
+                raw.get("report_required_min_above", defaults["report_required_min_above"])
+            ),
         }
     except Exception:
         return defaults
@@ -150,6 +207,8 @@ def save_app_settings(settings: dict) -> None:
         "drive_folder_url": str(settings.get("drive_folder_url", "")).strip(),
         "report_source_mode": str(settings.get("report_source_mode", "Import from Drive")).strip(),
         "drive_import_mode": str(settings.get("drive_import_mode", "URL Google Drive")).strip(),
+        "report_threshold_rule_c": float(settings.get("report_threshold_rule_c", 55.0)),
+        "report_required_min_above": float(settings.get("report_required_min_above", 30.0)),
     }
     APP_SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -400,6 +459,43 @@ if "drive_file_sort_dir" not in st.session_state:
     st.session_state.drive_file_sort_dir = "desc"
 if "drive_file_page" not in st.session_state:
     st.session_state.drive_file_page = 1
+if "report_cliente" not in st.session_state:
+    st.session_state.report_cliente = ""
+if "report_indirizzo" not in st.session_state:
+    st.session_state.report_indirizzo = ""
+if "report_data_intervento" not in st.session_state:
+    st.session_state.report_data_intervento = date.today()
+if "report_luogo_intervento" not in st.session_state:
+    st.session_state.report_luogo_intervento = "Sede Saniservice"
+if "report_tecnico" not in st.session_state:
+    st.session_state.report_tecnico = ""
+if "report_codice_intervento" not in st.session_state:
+    st.session_state.report_codice_intervento = ""
+if "report_oggetto_trattato" not in st.session_state:
+    st.session_state.report_oggetto_trattato = ""
+if "report_note" not in st.session_state:
+    st.session_state.report_note = ""
+if "report_loaded_json_path" not in st.session_state:
+    st.session_state.report_loaded_json_path = ""
+if "report_header_pending" not in st.session_state:
+    st.session_state.report_header_pending = None
+if "report_threshold_rule_c" not in st.session_state:
+    st.session_state.report_threshold_rule_c = float(st.session_state.app_settings.get("report_threshold_rule_c", 55.0))
+if "report_required_min_above" not in st.session_state:
+    st.session_state.report_required_min_above = float(
+        st.session_state.app_settings.get("report_required_min_above", 30.0)
+    )
+if "remote_drive_defaults_applied" not in st.session_state:
+    st.session_state.remote_drive_defaults_applied = False
+
+remote_kv = _load_remote_kv_config()
+remote_drive_url = str(remote_kv.get("GDrive", "")).strip()
+if remote_drive_url and not st.session_state.get("remote_drive_defaults_applied", False):
+    # Il default deve arrivare dal foglio Google Sheet.
+    st.session_state.drive_folder_url = remote_drive_url
+    st.session_state.drive_url_input = remote_drive_url
+    st.session_state.sidebar_drive_url_input = remote_drive_url
+    st.session_state.remote_drive_defaults_applied = True
 
 user_agent = ""
 try:
@@ -621,6 +717,78 @@ def render_instant_temp_circles_idle() -> None:
             "</div>"
         )
     st.markdown(f'<div class="temp-circle-grid">{html}</div>', unsafe_allow_html=True)
+
+
+def _extract_report_header_from_payload(payload: dict, source_json: Path) -> dict:
+    first_frame = {}
+    frames = payload.get("frames")
+    if isinstance(frames, list) and frames and isinstance(frames[0], dict):
+        first_frame = frames[0]
+
+    def _pick(*keys: str) -> str:
+        for key in keys:
+            val = payload.get(key)
+            if val is None:
+                val = first_frame.get(key)
+            txt = str(val or "").strip()
+            if txt:
+                return txt
+        return ""
+
+    raw_date = _pick("data_intervento", "timestamp", "ts")
+    parsed_date = st.session_state.get("report_data_intervento", date.today())
+    if raw_date:
+        try:
+            parsed_ts = pd.to_datetime(raw_date, errors="coerce", utc=True)
+            if not pd.isna(parsed_ts):
+                parsed_date = parsed_ts.tz_convert("Europe/Rome").date()
+        except Exception:
+            pass
+
+    oggetto = str(payload.get("oggetto_trattato") or "").strip()
+    if not oggetto:
+        objects = payload.get("objects")
+        if isinstance(objects, list):
+            descriptions = [
+                str(obj.get("description", "")).strip()
+                for obj in objects
+                if isinstance(obj, dict) and str(obj.get("description", "")).strip()
+            ]
+            if descriptions:
+                oggetto = ", ".join(descriptions)
+
+    luogo_raw = _pick("luogo_intervento", "intervention_place")
+    luogo_norm = "Sede Cliente"
+    if luogo_raw.lower() in {"sani service", "sani-service", "sede saniservice"}:
+        luogo_norm = "Sede Saniservice"
+
+    return {
+        "report_cliente": _pick("customer_name", "cliente"),
+        "report_indirizzo": _pick("address", "indirizzo"),
+        "report_data_intervento": parsed_date,
+        "report_luogo_intervento": luogo_norm,
+        "report_tecnico": _pick("tecnico"),
+        "report_codice_intervento": str(
+            _pick("codice_intervento", "timestamp") or source_json.stem
+        ).strip(),
+        "report_oggetto_trattato": oggetto,
+        "report_note": _pick("notes", "note"),
+    }
+
+
+def _apply_report_header_from_payload(payload: dict, source_json: Path) -> None:
+    values = _extract_report_header_from_payload(payload, source_json)
+    # Non scriviamo direttamente su chiavi gia collegate ai widget nello stesso run.
+    st.session_state.report_header_pending = values
+
+
+def _apply_pending_report_header_if_any() -> None:
+    pending = st.session_state.get("report_header_pending")
+    if not isinstance(pending, dict):
+        return
+    for key, value in pending.items():
+        st.session_state[key] = value
+    st.session_state.report_header_pending = None
 
 
 def make_client_from_config(cfg: dict) -> UdpControllerClient | MockUdpControllerClient:
@@ -869,6 +1037,22 @@ with st.sidebar:
     st.session_state.drive_folder_path = sidebar_drive_folder.strip()
     st.session_state.drive_folder_url = sidebar_drive_url.strip()
 
+    st.markdown("##### Regola conformita report")
+    st.number_input(
+        "Soglia letale (C)",
+        min_value=0.0,
+        max_value=200.0,
+        step=0.5,
+        key="report_threshold_rule_c",
+    )
+    st.number_input(
+        "Minuti minimi sopra soglia",
+        min_value=0.0,
+        max_value=600.0,
+        step=1.0,
+        key="report_required_min_above",
+    )
+
     if st.button("Salva settings", use_container_width=True, key="save_settings_btn"):
         try:
             st.session_state.app_settings = {
@@ -877,6 +1061,8 @@ with st.sidebar:
                 "drive_folder_url": st.session_state.drive_folder_url,
                 "report_source_mode": st.session_state.get("report_source_mode_default", "Import from Drive"),
                 "drive_import_mode": st.session_state.get("drive_import_mode_default", "URL Google Drive"),
+                "report_threshold_rule_c": float(st.session_state.get("report_threshold_rule_c", 55.0)),
+                "report_required_min_above": float(st.session_state.get("report_required_min_above", 30.0)),
             }
             save_app_settings(st.session_state.app_settings)
             st.session_state.drive_url_input = st.session_state.drive_folder_url
@@ -1388,18 +1574,32 @@ if show_advanced_sections:
     
 with tab_report:
     st.subheader("Report Attivita di Sanificazione")
+    _apply_pending_report_header_if_any()
 
     a1, a2 = st.columns([1, 1])
     with a1:
-        cliente = st.text_input("Cliente")
-        indirizzo = st.text_input("Indirizzo")
-        data_intervento = st.date_input("Data intervento", value=date.today())
-        luogo_intervento = st.selectbox("Luogo Intervento", options=["Sede Saniservice", "Sede Cliente"])
-        tecnico = st.text_input("Tecnico")
+        st.text_input("Cliente", key="report_cliente")
+        st.text_input("Indirizzo", key="report_indirizzo")
+        st.date_input("Data intervento", key="report_data_intervento")
+        st.selectbox(
+            "Luogo Intervento",
+            options=["Sede Saniservice", "Sede Cliente"],
+            key="report_luogo_intervento",
+        )
+        st.text_input("Tecnico", key="report_tecnico")
     with a2:
-        codice_intervento = st.text_input("Codice intervento")
-        oggetto_trattato = st.text_input("Oggetto trattato")
-        note = st.text_area("Note", height=180)
+        st.text_input("Codice intervento", key="report_codice_intervento")
+        st.text_input("Oggetto trattato", key="report_oggetto_trattato")
+        st.text_area("Note", height=180, key="report_note")
+
+    cliente = st.session_state.get("report_cliente", "")
+    indirizzo = st.session_state.get("report_indirizzo", "")
+    data_intervento = st.session_state.get("report_data_intervento", date.today())
+    luogo_intervento = st.session_state.get("report_luogo_intervento", "Sede Saniservice")
+    tecnico = st.session_state.get("report_tecnico", "")
+    codice_intervento = st.session_state.get("report_codice_intervento", "")
+    oggetto_trattato = st.session_state.get("report_oggetto_trattato", "")
+    note = st.session_state.get("report_note", "")
 
     st.markdown("<hr style='border:0; border-top:1px solid #d1d5db; margin: 10px 0 12px 0;'>", unsafe_allow_html=True)
     st.markdown("#### Dati termici")
@@ -1745,6 +1945,12 @@ with tab_report:
                     except Exception as exc:
                         st.error(f"Errore lettura JSON: {exc}")
                     else:
+                        selected_json_path = str(selected_json)
+                        if st.session_state.get("report_loaded_json_path") != selected_json_path:
+                            _apply_report_header_from_payload(payload, selected_json)
+                            st.session_state.report_loaded_json_path = selected_json_path
+                            st.rerun()
+
                         frames = payload.get("frames")
                         if not isinstance(frames, list) or not frames:
                             st.warning("Il file JSON non contiene frame validi in 'frames'.")
@@ -1760,15 +1966,6 @@ with tab_report:
                             else:
                                 st.caption(f"Caricati {len(temp_df)} punti dal file '{selected_json.name}'.")
 
-                                if not cliente and payload.get("customer_name"):
-                                    cliente = str(payload.get("customer_name", ""))
-                                if not indirizzo and payload.get("address"):
-                                    indirizzo = str(payload.get("address", ""))
-                                if not note and payload.get("notes"):
-                                    note = str(payload.get("notes", ""))
-                                if not codice_intervento:
-                                    codice_intervento = str(payload.get("timestamp", ""))
-
     if intervention_duration == "-" and not temp_df.empty and "tempo_min" in temp_df.columns:
         try:
             mins = pd.to_numeric(temp_df["tempo_min"], errors="coerce")
@@ -1779,11 +1976,11 @@ with tab_report:
         except Exception:
             pass
 
-    b1, b2 = st.columns(2)
-    with b1:
-        threshold_c = st.number_input("Soglia letale (C)", min_value=0.0, max_value=200.0, value=55.0, step=0.5)
-    with b2:
-        required_min_above = st.number_input("Minuti minimi sopra soglia", min_value=0.0, max_value=600.0, value=30.0, step=1.0)
+    threshold_c = float(st.session_state.get("report_threshold_rule_c", 55.0))
+    required_min_above = float(st.session_state.get("report_required_min_above", 30.0))
+    st.caption(
+        f"Regola conformita da sidebar: soglia {threshold_c:.1f} C | minuti minimi {required_min_above:.1f}"
+    )
 
     if temp_df.empty:
         st.warning("Inserisci o carica dati validi per generare analisi e report.")
@@ -1791,10 +1988,15 @@ with tab_report:
         stats = calculate_thermal_stats(temp_df, threshold_c=float(threshold_c), required_min_above=float(required_min_above))
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Temp. massima", f"{stats['max_temp_c']:.2f} C")
-        m2.metric("Minuti sopra soglia", f"{stats['minutes_above_threshold']:.2f}")
+        m1.metric("Soglia letale (C)", f"{threshold_c:.1f}")
+        m2.metric("Minuti minimi sopra soglia", f"{required_min_above:.1f}")
         m3.metric("Soglia raggiunta", "SI" if stats["threshold_reached"] else "NO")
         m4.metric("Esito", "CONFORME" if stats["conforme"] else "NON CONFORME")
+
+        if not pd.isna(stats["max_temp_c"]):
+            st.caption(
+                f"Temperatura massima rilevata: {float(stats['max_temp_c']):.2f} C | Minuti sopra soglia: {float(stats['minutes_above_threshold']):.2f}"
+            )
 
         if stats["conforme"]:
             st.markdown('<div class="metric-ok">Esito automatico: CONFORME</div>', unsafe_allow_html=True)
@@ -1851,11 +2053,15 @@ with tab_report:
             include_8_sensors_chart=include_8_sensors_chart,
             chart_metric_mode=report_metric_mode,
         )
+        pdf_file_name = f"report_sanificazione_{data_intervento.isoformat()}.pdf"
+        if source_mode == "Import from Drive" and st.session_state.get("selected_drive_json_path"):
+            pdf_file_name = f"{Path(st.session_state.selected_drive_json_path).stem}.pdf"
+
         with pdf_dl_col:
             st.download_button(
                 label="Scarica report PDF",
                 data=pdf_bytes,
-                file_name=f"report_sanificazione_{data_intervento.isoformat()}.pdf",
+                file_name=pdf_file_name,
                 mime="application/pdf",
                 use_container_width=True,
                 key="download_report_pdf_btn",

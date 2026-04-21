@@ -75,7 +75,7 @@ def _segment_above_duration(t1: float, v1: float, t2: float, v2: float, threshol
 
 
 def calculate_thermal_stats(df: pd.DataFrame, threshold_c: float, required_min_above: float) -> Dict[str, float | bool]:
-    if df.empty or len(df) < 2:
+    if df.empty:
         return {
             "max_temp_c": float("nan"),
             "minutes_above_threshold": 0.0,
@@ -83,7 +83,26 @@ def calculate_thermal_stats(df: pd.DataFrame, threshold_c: float, required_min_a
             "conforme": False,
         }
 
-    max_temp = float(df["temperatura_c"].max())
+    # Anche con un solo campione valorizziamo la temperatura massima disponibile.
+    max_temp = float(pd.to_numeric(df["temperatura_c"], errors="coerce").max())
+    if pd.isna(max_temp):
+        return {
+            "max_temp_c": float("nan"),
+            "minutes_above_threshold": 0.0,
+            "threshold_reached": False,
+            "conforme": False,
+        }
+
+    if len(df) < 2:
+        threshold_reached = max_temp >= threshold_c
+        conforme = threshold_reached and required_min_above <= 0
+        return {
+            "max_temp_c": max_temp,
+            "minutes_above_threshold": 0.0,
+            "threshold_reached": threshold_reached,
+            "conforme": conforme,
+        }
+
     minutes_above = 0.0
 
     for i in range(1, len(df)):
