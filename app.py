@@ -491,6 +491,8 @@ if "report_required_min_above" not in st.session_state:
     st.session_state.report_required_min_above = float(
         st.session_state.app_settings.get("report_required_min_above", 30.0)
     )
+if "import_data_from_collection" not in st.session_state:
+    st.session_state.import_data_from_collection = False
 if "remote_drive_defaults_applied" not in st.session_state:
     st.session_state.remote_drive_defaults_applied = False
 
@@ -1072,7 +1074,6 @@ with st.sidebar:
             }
             save_app_settings(st.session_state.app_settings)
             st.session_state.drive_url_input = st.session_state.drive_folder_url
-            st.session_state.sidebar_drive_url_input = st.session_state.drive_folder_url
             st.success("Settings salvati.")
         except Exception as exc:
             st.error(f"Errore salvataggio settings: {exc}")
@@ -1580,24 +1581,36 @@ if show_advanced_sections:
         st.caption("Nota: se l'app Android originale e questo collector interrogano insieme lo stesso controller, possono esserci interferenze.")
     
 with tab_report:
-    st.subheader("Report Attivita di Sanificazione")
-    _apply_pending_report_header_if_any()
+    title_col, toggle_col = st.columns([3, 1])
+    with title_col:
+        st.subheader("Report Attivita di Sanificazione")
+    with toggle_col:
+        st.toggle(
+            "Importa dati da raccolta",
+            value=st.session_state.get("import_data_from_collection", False),
+            key="import_data_from_collection",
+        )
+
+    is_import_mode = st.session_state.get("import_data_from_collection", False)
+    if is_import_mode:
+        _apply_pending_report_header_if_any()
 
     a1, a2 = st.columns([1, 1])
     with a1:
-        st.text_input("Cliente", key="report_cliente")
-        st.text_input("Indirizzo", key="report_indirizzo")
-        st.date_input("Data intervento", key="report_data_intervento")
+        st.text_input("Cliente", key="report_cliente", disabled=is_import_mode)
+        st.text_input("Indirizzo", key="report_indirizzo", disabled=is_import_mode)
+        st.date_input("Data intervento", key="report_data_intervento", disabled=is_import_mode)
         st.selectbox(
             "Luogo Intervento",
             options=["Sede Saniservice", "Sede Cliente"],
             key="report_luogo_intervento",
+            disabled=is_import_mode,
         )
-        st.text_input("Tecnico", key="report_tecnico")
+        st.text_input("Tecnico", key="report_tecnico", disabled=is_import_mode)
     with a2:
-        st.text_input("Codice intervento", key="report_codice_intervento")
-        st.text_input("Oggetto trattato", key="report_oggetto_trattato")
-        st.text_area("Note", height=180, key="report_note")
+        st.text_input("Codice intervento", key="report_codice_intervento", disabled=is_import_mode)
+        st.text_input("Oggetto trattato", key="report_oggetto_trattato", disabled=is_import_mode)
+        st.text_area("Note", height=180, key="report_note", disabled=is_import_mode)
 
     cliente = st.session_state.get("report_cliente", "")
     indirizzo = st.session_state.get("report_indirizzo", "")
@@ -1728,7 +1741,6 @@ with tab_report:
                     st.session_state.drive_url_input = drive_url
                 if drive_url:
                     st.session_state.drive_folder_url = drive_url
-                    st.session_state.sidebar_drive_url_input = drive_url
 
                 download_now = st.button("Scarica/aggiorna da URL", key="download_drive_url_btn")
                 if not drive_url:
@@ -1955,7 +1967,8 @@ with tab_report:
                     else:
                         selected_json_path = str(selected_json)
                         if st.session_state.get("report_loaded_json_path") != selected_json_path:
-                            _apply_report_header_from_payload(payload, selected_json)
+                            if is_import_mode:
+                                _apply_report_header_from_payload(payload, selected_json)
                             st.session_state.report_loaded_json_path = selected_json_path
                             st.rerun()
 
