@@ -439,6 +439,12 @@ if "drive_folder_path" not in st.session_state:
     st.session_state.drive_folder_path = st.session_state.app_settings.get("drive_folder_path", "")
 if "drive_folder_url" not in st.session_state:
     st.session_state.drive_folder_url = st.session_state.app_settings.get("drive_folder_url", "")
+if (
+    not st.session_state.get("drive_folder_url")
+    and str(st.session_state.get("drive_folder_path", "")).lower().startswith(("http://", "https://"))
+):
+    # Fallback retrocompatibile: URL ancora presente nel vecchio campo path.
+    st.session_state.drive_folder_url = str(st.session_state.get("drive_folder_path", "")).strip()
 if "drive_url_input" not in st.session_state:
     st.session_state.drive_url_input = st.session_state.drive_folder_url
 if "sidebar_drive_url_input" not in st.session_state:
@@ -1066,6 +1072,7 @@ with st.sidebar:
             }
             save_app_settings(st.session_state.app_settings)
             st.session_state.drive_url_input = st.session_state.drive_folder_url
+            st.session_state.sidebar_drive_url_input = st.session_state.drive_folder_url
             st.success("Settings salvati.")
         except Exception as exc:
             st.error(f"Errore salvataggio settings: {exc}")
@@ -1721,6 +1728,7 @@ with tab_report:
                     st.session_state.drive_url_input = drive_url
                 if drive_url:
                     st.session_state.drive_folder_url = drive_url
+                    st.session_state.sidebar_drive_url_input = drive_url
 
                 download_now = st.button("Scarica/aggiorna da URL", key="download_drive_url_btn")
                 if not drive_url:
