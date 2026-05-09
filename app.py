@@ -624,9 +624,8 @@ def _drive_frames_to_temp_df(frames: list[dict], metric: str) -> pd.DataFrame:
         out["temperatura_c"] = sensor_df[["s7", "s8"]].mean(axis=1)
     elif metric == "media_sensori":
         out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].mean(axis=1)
-    elif metric == "tutte":
-        out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].max(axis=1)
     else:
+        # Covers "tutte", "max_sensori" and any unrecognised metric.
         out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].max(axis=1)
 
     out = out.dropna(subset=["temperatura_c"]).sort_values("tempo_min")
@@ -2064,11 +2063,13 @@ with tab_report:
         _col_to_label = {
             "s1": "P1", "s2": "P2", "s3": "P3", "s4": "P4",
             "s5": "P5", "s6": "P6", "s7": "S7", "s8": "S8",
+            # "sonde_s7_s8" mode renames columns to uppercase before display
             "S7": "S7", "S8": "S8",
         }
         _col_to_internal = {
             "s1": "s1", "s2": "s2", "s3": "s3", "s4": "s4",
             "s5": "s5", "s6": "s6", "s7": "s7", "s8": "s8",
+            # "sonde_s7_s8" mode renames columns to uppercase before display
             "S7": "s7", "S8": "s8",
         }
         _table_sensor_cols = [c for c in display_df.columns if c != "tempo_min"]

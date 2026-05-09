@@ -396,6 +396,7 @@ def create_sanification_pdf(
                     data_rows.append(row_data)
                 _n_sensor_cols = len(_active_sensor_meta)
                 _time_col_w = 2.2 * cm
+                # Remaining width after the time column across the full printable area (~17.8 cm).
                 _sensor_col_w = (15.6 * cm) / _n_sensor_cols
                 data_table = Table(data_rows, colWidths=[_time_col_w] + [_sensor_col_w] * _n_sensor_cols, repeatRows=1)
             else:
