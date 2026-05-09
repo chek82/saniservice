@@ -615,12 +615,12 @@ def _drive_frames_to_temp_df(frames: list[dict], metric: str) -> pd.DataFrame:
         "p4": "s4",
         "p5": "s5",
         "p6": "s6",
-        "s1": "s7",
-        "s2": "s8",
+        "s7": "s7",
+        "s8": "s8",
     }
     if metric in metric_to_internal:
         out["temperatura_c"] = sensor_df[metric_to_internal[metric]]
-    elif metric == "sonde_s1_s2":
+    elif metric == "sonde_s7_s8":
         out["temperatura_c"] = sensor_df[["s7", "s8"]].mean(axis=1)
     elif metric == "media_sensori":
         out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].mean(axis=1)
@@ -678,7 +678,7 @@ def time_ticks_10min(df: pd.DataFrame, col_name: str = "timestamp") -> list:
 
 
 def render_instant_temp_circles(values: list | None) -> None:
-    labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S1", "S2"]
+    labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S7", "S8"]
     if not values:
         values = [None] * 8
     safe_values = list(values)[:8]
@@ -715,7 +715,7 @@ def render_instant_temp_circles(values: list | None) -> None:
 
 def render_instant_temp_circles_idle() -> None:
     # In stato idle mostriamo i canali in grigio per evitare ambiguita su letture non correnti.
-    labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S1", "S2"]
+    labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S7", "S8"]
     html = ""
     for label in labels:
         html += (
@@ -1947,14 +1947,16 @@ with tab_report:
                         "p4",
                         "p5",
                         "p6",
-                        "s1",
-                        "s2",
-                        "sonde_s1_s2",
+                        "s7",
+                        "s8",
+                        "sonde_s7_s8",
                     ],
                     format_func=lambda x: {
-                        "media_sensori": "Media sensori (P1..P6 + S1..S2)",
-                        "max_sensori": "Massimo sensori (P1..P6 + S1..S2)",
-                        "sonde_s1_s2": "Sonde S1 e S2",
+                        "media_sensori": "Media sensori (P1..P6 + S7..S8)",
+                        "max_sensori": "Massimo sensori (P1..P6 + S7..S8)",
+                        "sonde_s7_s8": "Sonde S7 e S8",
+                        "s7": "S7",
+                        "s8": "S8",
                     }.get(x, x.upper()),
                 )
                 report_metric_mode = drive_metric_mode
@@ -2025,15 +2027,35 @@ with tab_report:
             st.markdown('<div class="metric-ko">Esito automatico: NON CONFORME</div>', unsafe_allow_html=True)
 
         st.markdown("#### Grafico Tempo / Temperatura")
-        if report_metric_mode == "sonde_s1_s2" and not sensor_df_for_pdf.empty:
+        if report_metric_mode == "sonde_s7_s8" and not sensor_df_for_pdf.empty:
             sondes_chart_df = sensor_df_for_pdf[["tempo_min", "s7", "s8"]].copy()
-            sondes_chart_df = sondes_chart_df.rename(columns={"s7": "S1", "s8": "S2"}).set_index("tempo_min")
-            st.line_chart(sondes_chart_df[["S1", "S2"]])
-            st.caption("Per i calcoli automatici viene usata la media tra S1 e S2.")
+            sondes_chart_df = sondes_chart_df.rename(columns={"s7": "S7", "s8": "S8"}).set_index("tempo_min")
+            st.line_chart(sondes_chart_df[["S7", "S8"]])
+            st.caption("Per i calcoli automatici viene usata la media tra S7 e S8.")
         else:
             chart_df = temp_df.copy().set_index("tempo_min")
             st.line_chart(chart_df[["temperatura_c"]])
-        st.dataframe(temp_df, use_container_width=True)
+
+        _metric_to_sensor_col = {
+            "p1": "s1", "p2": "s2", "p3": "s3", "p4": "s4", "p5": "s5", "p6": "s6",
+            "s7": "s7", "s8": "s8",
+        }
+        if not sensor_df_for_pdf.empty:
+            if report_metric_mode == "sonde_s7_s8":
+                display_df = sensor_df_for_pdf[["tempo_min", "s7", "s8"]].copy()
+                display_df = display_df.rename(columns={"s7": "S7", "s8": "S8"})
+            elif report_metric_mode in _metric_to_sensor_col:
+                col = _metric_to_sensor_col[report_metric_mode]
+                if col in sensor_df_for_pdf.columns:
+                    display_df = sensor_df_for_pdf[["tempo_min", col]].copy()
+                    display_df = display_df.rename(columns={col: report_metric_mode.upper()})
+                else:
+                    display_df = temp_df
+            else:
+                display_df = sensor_df_for_pdf.copy()
+        else:
+            display_df = temp_df
+        st.dataframe(display_df, use_container_width=True)
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         st.markdown("<hr style='border:0; border-top:1px solid #d1d5db; margin: 6px 0 12px 0;'>", unsafe_allow_html=True)

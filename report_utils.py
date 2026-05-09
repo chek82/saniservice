@@ -156,7 +156,7 @@ def create_sanification_pdf(
     def _build_multi_sensor_chart_image_bytes(data: pd.DataFrame) -> bytes:
         fig, ax = plt.subplots(figsize=(7.2, 3.4), dpi=150)
         sensor_cols = [f"s{i}" for i in range(1, 9)]
-        labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S1", "S2"]
+        labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S7", "S8"]
         colors_map = [
             "#1d4ed8",
             "#0284c7",
@@ -192,12 +192,12 @@ def create_sanification_pdf(
         fig, ax = plt.subplots(figsize=(7.2, 3.2), dpi=150)
         s1 = pd.to_numeric(data.get("s7"), errors="coerce")
         s2 = pd.to_numeric(data.get("s8"), errors="coerce")
-        ax.plot(data["tempo_min"], s1, color="#1d4ed8", linewidth=2, label="S1")
-        ax.plot(data["tempo_min"], s2, color="#be123c", linewidth=2, label="S2")
+        ax.plot(data["tempo_min"], s1, color="#1d4ed8", linewidth=2, label="S7")
+        ax.plot(data["tempo_min"], s2, color="#be123c", linewidth=2, label="S8")
         ax.axhline(y=threshold_c, color="#dc2626", linestyle="--", linewidth=1.2, label=f"Soglia {threshold_c:.1f} C")
         ax.set_xlabel("Tempo (min)")
         ax.set_ylabel("Temperatura (C)")
-        ax.set_title("Andamento Sonde S1 e S2")
+        ax.set_title("Andamento Sonde S7 e S8")
         ax.grid(alpha=0.25)
         ax.legend(loc="best")
         fig.tight_layout()
@@ -350,8 +350,8 @@ def create_sanification_pdf(
             sensor_data = None
 
     if include_temp_chart:
-        if chart_metric_mode == "sonde_s1_s2" and sensor_data is not None:
-            story.append(Paragraph("Grafico Sonde S1 e S2", section_style))
+        if chart_metric_mode == "sonde_s7_s8" and sensor_data is not None:
+            story.append(Paragraph("Grafico Sonde S7 e S8", section_style))
             chart_png = _build_sonde_chart_image_bytes(sensor_data)
         else:
             story.append(Paragraph("Grafico Tempo / Temperatura", section_style))
@@ -375,7 +375,7 @@ def create_sanification_pdf(
             sampled["tempo_slot"] = (sampled["tempo_min"] // 3.0) * 3.0
             sampled = sampled.groupby("tempo_slot", as_index=False).first()
 
-            data_rows = [["tempo_min", "temp_p1", "temp_p2", "temp_p3", "temp_p4", "temp_p5", "temp_p6", "temp_S1", "temp_S2"]]
+            data_rows = [["tempo_min", "temp_p1", "temp_p2", "temp_p3", "temp_p4", "temp_p5", "temp_p6", "temp_S7", "temp_S8"]]
             for _, row in sampled.iterrows():
                 data_rows.append(
                     [
