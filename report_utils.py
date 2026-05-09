@@ -367,11 +367,36 @@ def create_sanification_pdf(
 
     if include_temp_table:
         story.append(Paragraph("Tabella Misurazioni", section_style))
-        data_rows = [["tempo_min", "temperatura_c"]]
-        for _, row in df.iterrows():
-            data_rows.append([f"{float(row['tempo_min']):.2f}", f"{float(row['temperatura_c']):.2f}"])
+        has_sensor_table = sensor_data is not None and all(col in sensor_data.columns for col in [f"s{i}" for i in range(1, 9)])
+        if has_sensor_table:
+            sampled = sensor_data.copy()
+            sampled["tempo_min"] = pd.to_numeric(sampled["tempo_min"], errors="coerce")
+            sampled = sampled.dropna(subset=["tempo_min"]).sort_values("tempo_min")
+            sampled["tempo_slot"] = (sampled["tempo_min"] // 3.0) * 3.0
+            sampled = sampled.groupby("tempo_slot", as_index=False).first()
 
-        data_table = Table(data_rows, colWidths=[8.6 * cm, 8.6 * cm], repeatRows=1)
+            data_rows = [["tempo_min", "temp_p1", "temp_p2", "temp_p3", "temp_p4", "temp_p5", "temp_p6", "temp_S1", "temp_S2"]]
+            for _, row in sampled.iterrows():
+                data_rows.append(
+                    [
+                        f"{float(row['tempo_slot']):.2f}",
+                        f"{float(row['s1']):.2f}" if pd.notna(row["s1"]) else "-",
+                        f"{float(row['s2']):.2f}" if pd.notna(row["s2"]) else "-",
+                        f"{float(row['s3']):.2f}" if pd.notna(row["s3"]) else "-",
+                        f"{float(row['s4']):.2f}" if pd.notna(row["s4"]) else "-",
+                        f"{float(row['s5']):.2f}" if pd.notna(row["s5"]) else "-",
+                        f"{float(row['s6']):.2f}" if pd.notna(row["s6"]) else "-",
+                        f"{float(row['s7']):.2f}" if pd.notna(row["s7"]) else "-",
+                        f"{float(row['s8']):.2f}" if pd.notna(row["s8"]) else "-",
+                    ]
+                )
+            data_table = Table(data_rows, colWidths=[2.2 * cm] + [1.86 * cm] * 8, repeatRows=1)
+        else:
+            data_rows = [["tempo_min", "temperatura_c"]]
+            for _, row in df.iterrows():
+                data_rows.append([f"{float(row['tempo_min']):.2f}", f"{float(row['temperatura_c']):.2f}"])
+            data_table = Table(data_rows, colWidths=[8.6 * cm, 8.6 * cm], repeatRows=1)
+
         data_table_style = TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
