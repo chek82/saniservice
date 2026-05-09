@@ -624,6 +624,8 @@ def _drive_frames_to_temp_df(frames: list[dict], metric: str) -> pd.DataFrame:
         out["temperatura_c"] = sensor_df[["s7", "s8"]].mean(axis=1)
     elif metric == "media_sensori":
         out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].mean(axis=1)
+    elif metric == "tutte":
+        out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].max(axis=1)
     else:
         out["temperatura_c"] = sensor_df[["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].max(axis=1)
 
@@ -1941,6 +1943,7 @@ with tab_report:
                     options=[
                         "media_sensori",
                         "max_sensori",
+                        "tutte",
                         "p1",
                         "p2",
                         "p3",
@@ -1954,6 +1957,7 @@ with tab_report:
                     format_func=lambda x: {
                         "media_sensori": "Media sensori (P1..P6 + S7..S8)",
                         "max_sensori": "Massimo sensori (P1..P6 + S7..S8)",
+                        "tutte": "Tutte (P1, P2, P3, P4, P5, P6, S7 e S8)",
                         "sonde_s7_s8": "Sonde S7 e S8",
                         "s7": "S7",
                         "s8": "S8",
@@ -2055,6 +2059,33 @@ with tab_report:
                 display_df = sensor_df_for_pdf.copy()
         else:
             display_df = temp_df
+
+        # Per-column flags in the table header to select which columns to include in the PDF report
+        _col_to_label = {
+            "s1": "P1", "s2": "P2", "s3": "P3", "s4": "P4",
+            "s5": "P5", "s6": "P6", "s7": "S7", "s8": "S8",
+            "S7": "S7", "S8": "S8",
+        }
+        _col_to_internal = {
+            "s1": "s1", "s2": "s2", "s3": "s3", "s4": "s4",
+            "s5": "s5", "s6": "s6", "s7": "s7", "s8": "s8",
+            "S7": "s7", "S8": "s8",
+        }
+        _table_sensor_cols = [c for c in display_df.columns if c != "tempo_min"]
+        _pdf_table_sensor_columns = None
+        if len(_table_sensor_cols) > 1:
+            st.caption("Colonne da includere nella tabella del report PDF:")
+            _flag_cols = st.columns(len(_table_sensor_cols))
+            _selected_internal: list[str] = []
+            for _fi, _col_name in enumerate(_table_sensor_cols):
+                with _flag_cols[_fi]:
+                    _label = _col_to_label.get(_col_name, _col_name)
+                    _internal = _col_to_internal.get(_col_name, _col_name.lower())
+                    if st.checkbox(_label, value=True, key=f"pdf_table_col_{_col_name}"):
+                        _selected_internal.append(_internal)
+            if _selected_internal:
+                _pdf_table_sensor_columns = _selected_internal
+
         st.dataframe(display_df, use_container_width=True)
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
@@ -2095,6 +2126,7 @@ with tab_report:
             include_temp_table=include_temp_table,
             include_8_sensors_chart=include_8_sensors_chart,
             chart_metric_mode=report_metric_mode,
+            table_sensor_columns=_pdf_table_sensor_columns,
         )
         pdf_file_name = f"report_sanificazione_{data_intervento.isoformat()}.pdf"
         if source_mode == "Import from Drive" and st.session_state.get("selected_drive_json_path"):

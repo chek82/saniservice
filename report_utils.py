@@ -136,6 +136,7 @@ def create_sanification_pdf(
     include_temp_table: bool = True,
     include_8_sensors_chart: bool = True,
     chart_metric_mode: str = "",
+    table_sensor_columns: list[str] | None = None,
 ) -> bytes:
     def _build_chart_image_bytes(data: pd.DataFrame) -> bytes:
         fig, ax = plt.subplots(figsize=(7.2, 3.2), dpi=150)
@@ -369,28 +370,39 @@ def create_sanification_pdf(
         story.append(Paragraph("Tabella Misurazioni", section_style))
         has_sensor_table = sensor_data is not None and all(col in sensor_data.columns for col in [f"s{i}" for i in range(1, 9)])
         if has_sensor_table:
+            _all_sensor_meta = [
+                ("s1", "temp_p1"), ("s2", "temp_p2"), ("s3", "temp_p3"), ("s4", "temp_p4"),
+                ("s5", "temp_p5"), ("s6", "temp_p6"), ("s7", "temp_S7"), ("s8", "temp_S8"),
+            ]
+            if table_sensor_columns:
+                _active_sensor_meta = [(c, l) for c, l in _all_sensor_meta if c in table_sensor_columns]
+            else:
+                _active_sensor_meta = _all_sensor_meta
+
             sampled = sensor_data.copy()
             sampled["tempo_min"] = pd.to_numeric(sampled["tempo_min"], errors="coerce")
             sampled = sampled.dropna(subset=["tempo_min"]).sort_values("tempo_min")
             sampled["tempo_slot"] = (sampled["tempo_min"] // 3.0) * 3.0
             sampled = sampled.groupby("tempo_slot", as_index=False).first()
 
-            data_rows = [["tempo_min", "temp_p1", "temp_p2", "temp_p3", "temp_p4", "temp_p5", "temp_p6", "temp_S7", "temp_S8"]]
-            for _, row in sampled.iterrows():
-                data_rows.append(
-                    [
-                        f"{float(row['tempo_slot']):.2f}",
-                        f"{float(row['s1']):.2f}" if pd.notna(row["s1"]) else "-",
-                        f"{float(row['s2']):.2f}" if pd.notna(row["s2"]) else "-",
-                        f"{float(row['s3']):.2f}" if pd.notna(row["s3"]) else "-",
-                        f"{float(row['s4']):.2f}" if pd.notna(row["s4"]) else "-",
-                        f"{float(row['s5']):.2f}" if pd.notna(row["s5"]) else "-",
-                        f"{float(row['s6']):.2f}" if pd.notna(row["s6"]) else "-",
-                        f"{float(row['s7']):.2f}" if pd.notna(row["s7"]) else "-",
-                        f"{float(row['s8']):.2f}" if pd.notna(row["s8"]) else "-",
-                    ]
-                )
-            data_table = Table(data_rows, colWidths=[2.2 * cm] + [1.86 * cm] * 8, repeatRows=1)
+            if _active_sensor_meta:
+                header_row = ["tempo_min"] + [l for _, l in _active_sensor_meta]
+                data_rows = [header_row]
+                for _, row in sampled.iterrows():
+                    row_data = [f"{float(row['tempo_slot']):.2f}"]
+                    for col_name, _ in _active_sensor_meta:
+                        val = row.get(col_name)
+                        row_data.append(f"{float(val):.2f}" if pd.notna(val) else "-")
+                    data_rows.append(row_data)
+                _n_sensor_cols = len(_active_sensor_meta)
+                _time_col_w = 2.2 * cm
+                _sensor_col_w = (15.6 * cm) / _n_sensor_cols
+                data_table = Table(data_rows, colWidths=[_time_col_w] + [_sensor_col_w] * _n_sensor_cols, repeatRows=1)
+            else:
+                data_rows = [["tempo_min", "temperatura_c"]]
+                for _, row in df.iterrows():
+                    data_rows.append([f"{float(row['tempo_min']):.2f}", f"{float(row['temperatura_c']):.2f}"])
+                data_table = Table(data_rows, colWidths=[8.6 * cm, 8.6 * cm], repeatRows=1)
         else:
             data_rows = [["tempo_min", "temperatura_c"]]
             for _, row in df.iterrows():
