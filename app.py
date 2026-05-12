@@ -233,12 +233,26 @@ def _download_json_files_from_drive_url(folder_url: str, cache_dir: Path) -> tup
 
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pulizia cache precedente per mantenere solo l'ultimo download.
-    for old_json in cache_dir.rglob("*.json"):
-        try:
-            old_json.unlink()
-        except Exception:
-            pass
+    cached_json_files = sorted(cache_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    def _is_drive_access_error(message: str) -> bool:
+        lowered = message.lower()
+        return (
+            "cannot retrieve the public link" in lowered
+            or "anyone with the link" in lowered
+            or "permission" in lowered
+            or "access" in lowered
+        )
+
+    parsed = urlparse(url)
+    path_parts = [part for part in (parsed.path or "").split("/") if part]
+    query_params = parse_qs(parsed.query or "")
+
+    file_id = ""
+    if path_parts[:2] == ["file", "d"] and len(path_parts) >= 3:
+        file_id = path_parts[2]
+    elif "id" in query_params and query_params.get("id"):
+        file_id = query_params["id"][0]
 
     try:
         try:
@@ -258,7 +272,29 @@ def _download_json_files_from_drive_url(folder_url: str, cache_dir: Path) -> tup
                 use_cookies=False,
             )
     except Exception as exc:
-        return [], f"Download da Google Drive fallito: {exc}"
+        # Fallback: alcuni link sono di singolo file (es. /uc?id=...) e non cartella.
+        if file_id:
+            single_file_path = cache_dir / f"{file_id}.json"
+            try:
+                gdown.download(
+                    id=file_id,
+                    output=str(single_file_path),
+                    quiet=True,
+                    fuzzy=True,
+                    use_cookies=False,
+                )
+            except Exception as single_exc:
+                if _is_drive_access_error(str(single_exc)) or _is_drive_access_error(str(exc)):
+                    return cached_json_files, None
+                return [], f"Download da Google Drive fallito: {single_exc}"
+        else:
+            if _is_drive_access_error(str(exc)):
+                return cached_json_files, None
+            return [], (
+                "Download da Google Drive fallito. Se il link punta a un singolo file, condividilo come "
+                "'Anyone with the link/Chiunque abbia il link' oppure usa il link cartella. "
+                f"Dettaglio: {exc}"
+            )
 
     json_files = sorted(cache_dir.rglob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not json_files:
