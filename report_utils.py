@@ -179,7 +179,7 @@ def create_sanification_pdf(
         ax.axhline(y=threshold_c, color="#dc2626", linestyle="--", linewidth=1.2, label=f"Soglia {threshold_c:.1f} C")
         ax.set_xlabel("Tempo (min)")
         ax.set_ylabel("Temperatura (C)")
-        ax.set_title("Andamento Completo 8 Sensori")
+        ax.set_title("Andamento Completo Pannelli e Sonde")
         ax.grid(alpha=0.25)
         ax.legend(loc="upper left", ncol=3, fontsize=8)
         fig.tight_layout()
@@ -198,7 +198,7 @@ def create_sanification_pdf(
         ax.axhline(y=threshold_c, color="#dc2626", linestyle="--", linewidth=1.2, label=f"Soglia {threshold_c:.1f} C")
         ax.set_xlabel("Tempo (min)")
         ax.set_ylabel("Temperatura (C)")
-        ax.set_title("Andamento Sonde S7 e S8")
+        ax.set_title("Andamento Sonde (S7 e S8)")
         ax.grid(alpha=0.25)
         ax.legend(loc="best")
         fig.tight_layout()
@@ -361,7 +361,7 @@ def create_sanification_pdf(
         story.append(chart)
 
     if include_8_sensors_chart and sensor_data is not None:
-        story.append(Paragraph("Grafico Completo 8 Sensori", section_style))
+        story.append(Paragraph("Grafico Completo Pannelli e Sonde", section_style))
         sensor_chart_png = _build_multi_sensor_chart_image_bytes(sensor_data)
         sensor_chart = Image(BytesIO(sensor_chart_png), width=17.2 * cm, height=7.2 * cm)
         story.append(sensor_chart)
@@ -371,8 +371,8 @@ def create_sanification_pdf(
         has_sensor_table = sensor_data is not None and all(col in sensor_data.columns for col in [f"s{i}" for i in range(1, 9)])
         if has_sensor_table:
             _all_sensor_meta = [
-                ("s1", "temp_p1"), ("s2", "temp_p2"), ("s3", "temp_p3"), ("s4", "temp_p4"),
-                ("s5", "temp_p5"), ("s6", "temp_p6"), ("s7", "temp_S7"), ("s8", "temp_S8"),
+                ("s1", "P1"), ("s2", "P2"), ("s3", "P3"), ("s4", "P4"),
+                ("s5", "P5"), ("s6", "P6"), ("s7", "S7"), ("s8", "S8"),
             ]
             if table_sensor_columns:
                 _active_sensor_meta = [(c, l) for c, l in _all_sensor_meta if c in table_sensor_columns]
@@ -386,7 +386,7 @@ def create_sanification_pdf(
             sampled = sampled.groupby("tempo_slot", as_index=False).first()
 
             if _active_sensor_meta:
-                header_row = ["tempo_min"] + [l for _, l in _active_sensor_meta]
+                header_row = ["tempo (min)"] + [l for _, l in _active_sensor_meta]
                 data_rows = [header_row]
                 for _, row in sampled.iterrows():
                     row_data = [f"{float(row['tempo_slot']):.2f}"]
@@ -400,12 +400,12 @@ def create_sanification_pdf(
                 _sensor_col_w = (15.6 * cm) / _n_sensor_cols
                 data_table = Table(data_rows, colWidths=[_time_col_w] + [_sensor_col_w] * _n_sensor_cols, repeatRows=1)
             else:
-                data_rows = [["tempo_min", "temperatura_c"]]
+                data_rows = [["tempo (min)", "temperatura (C)"]]
                 for _, row in df.iterrows():
                     data_rows.append([f"{float(row['tempo_min']):.2f}", f"{float(row['temperatura_c']):.2f}"])
                 data_table = Table(data_rows, colWidths=[8.6 * cm, 8.6 * cm], repeatRows=1)
         else:
-            data_rows = [["tempo_min", "temperatura_c"]]
+            data_rows = [["tempo (min)", "temperatura (C)"]]
             for _, row in df.iterrows():
                 data_rows.append([f"{float(row['tempo_min']):.2f}", f"{float(row['temperatura_c']):.2f}"])
             data_table = Table(data_rows, colWidths=[8.6 * cm, 8.6 * cm], repeatRows=1)

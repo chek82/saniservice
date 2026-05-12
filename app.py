@@ -563,8 +563,19 @@ def activity_frames_to_temp_df(rows: list[dict], metric: str) -> pd.DataFrame:
     first_ts = df["ts_dt"].iloc[0]
     df["tempo_min"] = (df["ts_dt"] - first_ts).dt.total_seconds() / 60.0
 
-    if metric in {"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"}:
-        df["temperatura_c"] = pd.to_numeric(df[metric], errors="coerce")
+    metric_to_internal = {
+        "p1": "s1",
+        "p2": "s2",
+        "p3": "s3",
+        "p4": "s4",
+        "p5": "s5",
+        "p6": "s6",
+        "s7": "s7",
+        "s8": "s8",
+    }
+
+    if metric in metric_to_internal:
+        df["temperatura_c"] = pd.to_numeric(df[metric_to_internal[metric]], errors="coerce")
     elif metric == "media_sensori":
         sensor_cols = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
         for col in sensor_cols:
@@ -616,7 +627,7 @@ def _drive_frames_to_sensor_df(frames: list[dict]) -> pd.DataFrame:
 
     first_ts = df["ts_dt"].iloc[0]
     df["tempo_min"] = (df["ts_dt"] - first_ts).dt.total_seconds() / 60.0
-    # Per import da Drive consideriamo solo i canali p1..p6 e s1..s2 del JSON.
+    # Per import da Drive consideriamo i canali p1..p6 e s7..s8 del JSON.
     source_to_internal = {
         "p1": "s1",
         "p2": "s2",
@@ -624,8 +635,8 @@ def _drive_frames_to_sensor_df(frames: list[dict]) -> pd.DataFrame:
         "p4": "s4",
         "p5": "s5",
         "p6": "s6",
-        "s1": "s7",
-        "s2": "s8",
+        "s7": "s7",
+        "s8": "s8",
     }
     for src_col, dst_col in source_to_internal.items():
         if src_col not in df.columns:
@@ -944,7 +955,7 @@ def run_batch_worker(cfg: dict, stop_event: threading.Event, state: dict) -> Non
 
 
 def _build_send_payload(payload_format: str, values: list[int], seq: int) -> str:
-    if payload_format == "CSV (s1..s8)":
+    if payload_format in {"CSV (P1..P6 + S7..S8)", "CSV (s1..s8)"}:
         return ",".join(str(v) for v in values)
     if payload_format == "JSON":
         return json.dumps(
@@ -1253,16 +1264,17 @@ if show_advanced_sections:
     
             sensor_thresholds = [None] * 8
             if batch_mode in {"Soglie sensori", "Timer o soglie (prima condizione)"}:
-                st.caption("Interrompi il batch se una qualsiasi sonda supera la soglia impostata.")
+                st.caption("Interrompi il batch se un pannello o una sonda supera la soglia impostata.")
                 tcols1 = st.columns(4)
                 tcols2 = st.columns(4)
-                labels = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+                keys = ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+                labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S7", "S8"]
                 for i in range(4):
                     with tcols1[i]:
-                        sensor_thresholds[i] = float(st.number_input(f"Soglia {labels[i]} (C)", value=55.0, step=0.5, key=f"thr_{labels[i]}"))
+                        sensor_thresholds[i] = float(st.number_input(f"Soglia {labels[i]} (C)", value=55.0, step=0.5, key=f"thr_{keys[i]}"))
                 for i in range(4, 8):
                     with tcols2[i - 4]:
-                        sensor_thresholds[i] = float(st.number_input(f"Soglia {labels[i]} (C)", value=55.0, step=0.5, key=f"thr_{labels[i]}"))
+                        sensor_thresholds[i] = float(st.number_input(f"Soglia {labels[i]} (C)", value=55.0, step=0.5, key=f"thr_{keys[i]}"))
     
             mode_map = {
                 "Numero cicli": "cycles",
@@ -1456,8 +1468,8 @@ if show_advanced_sections:
                     "s4": "Pannello 4",
                     "s5": "Pannello 5",
                     "s6": "Pannello 6",
-                    "s7": "Sonda Ispezione 1",
-                    "s8": "Sonda Ispezione 2",
+                    "s7": "Sonda S7",
+                    "s8": "Sonda S8",
                 }
     
                 plot_df = df[["ts", *sensor_cols]].copy()
@@ -1482,8 +1494,8 @@ if show_advanced_sections:
                         "Pannello 4",
                         "Pannello 5",
                         "Pannello 6",
-                        "Sonda Ispezione 1",
-                        "Sonda Ispezione 2",
+                        "Sonda S7",
+                        "Sonda S8",
                     ]
                     color_range = [
                         "#1d4ed8",
@@ -1569,8 +1581,8 @@ if show_advanced_sections:
                     "s4": "Pannello 4",
                     "s5": "Pannello 5",
                     "s6": "Pannello 6",
-                    "s7": "Sonda Ispezione 1",
-                    "s8": "Sonda Ispezione 2",
+                    "s7": "Sonda S7",
+                    "s8": "Sonda S8",
                 }
                 live_long = live_df.melt(
                     id_vars=["timestamp"],
@@ -1704,10 +1716,10 @@ with tab_report:
                 selected_activity = st.selectbox("Codice attivita", options=activity_codes)
                 metric_mode = st.selectbox(
                     "Metrica temperatura dal collector",
-                    options=["media_sensori", "max_sensori", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"],
+                    options=["media_sensori", "max_sensori", "p1", "p2", "p3", "p4", "p5", "p6", "s7", "s8"],
                     format_func=lambda x: {
-                        "media_sensori": "Media sensori (s1..s8)",
-                        "max_sensori": "Massimo sensori (s1..s8)",
+                        "media_sensori": "Media sensori (P1..P6 + S7..S8)",
+                        "max_sensori": "Massimo sensori (P1..P6 + S7..S8)",
                     }.get(x, x.upper()),
                 )
                 report_metric_mode = metric_mode
@@ -1973,22 +1985,28 @@ with tab_report:
                         selected_json = None
                         st.info("Seleziona un file dalla tabella per procedere.")
 
+                _drive_metric_options = [
+                    "media_sensori",
+                    "max_sensori",
+                    "tutte",
+                    "p1",
+                    "p2",
+                    "p3",
+                    "p4",
+                    "p5",
+                    "p6",
+                    "s7",
+                    "s8",
+                    "sonde_s7_s8",
+                ]
+                _drive_metric_default = st.session_state.get("drive_metric_mode_default", "sonde_s7_s8")
+                if _drive_metric_default not in _drive_metric_options:
+                    _drive_metric_default = "sonde_s7_s8"
+
                 drive_metric_mode = st.selectbox(
                     "Metrica temperatura da JSON",
-                    options=[
-                        "media_sensori",
-                        "max_sensori",
-                        "tutte",
-                        "p1",
-                        "p2",
-                        "p3",
-                        "p4",
-                        "p5",
-                        "p6",
-                        "s7",
-                        "s8",
-                        "sonde_s7_s8",
-                    ],
+                    options=_drive_metric_options,
+                    index=_drive_metric_options.index(_drive_metric_default),
                     format_func=lambda x: {
                         "media_sensori": "Media sensori (P1..P6 + S7..S8)",
                         "max_sensori": "Massimo sensori (P1..P6 + S7..S8)",
@@ -1998,6 +2016,7 @@ with tab_report:
                         "s8": "S8",
                     }.get(x, x.upper()),
                 )
+                st.session_state.drive_metric_mode_default = drive_metric_mode
                 report_metric_mode = drive_metric_mode
 
                 if selected_json is not None:
@@ -2071,6 +2090,21 @@ with tab_report:
             sondes_chart_df = sondes_chart_df.rename(columns={"s7": "S7", "s8": "S8"}).set_index("tempo_min")
             st.line_chart(sondes_chart_df[["S7", "S8"]])
             st.caption("Per i calcoli automatici viene usata la media tra S7 e S8.")
+        elif report_metric_mode == "tutte" and not sensor_df_for_pdf.empty:
+            all_chart_df = sensor_df_for_pdf[["tempo_min", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]].copy()
+            all_chart_df = all_chart_df.rename(
+                columns={
+                    "s1": "P1",
+                    "s2": "P2",
+                    "s3": "P3",
+                    "s4": "P4",
+                    "s5": "P5",
+                    "s6": "P6",
+                    "s7": "S7",
+                    "s8": "S8",
+                }
+            ).set_index("tempo_min")
+            st.line_chart(all_chart_df[["P1", "P2", "P3", "P4", "P5", "P6", "S7", "S8"]])
         else:
             chart_df = temp_df.copy().set_index("tempo_min")
             st.line_chart(chart_df[["temperatura_c"]])
@@ -2110,20 +2144,53 @@ with tab_report:
         }
         _table_sensor_cols = [c for c in display_df.columns if c != "tempo_min"]
         _pdf_table_sensor_columns = None
-        if len(_table_sensor_cols) > 1:
-            st.caption("Colonne da includere nella tabella del report PDF:")
-            _flag_cols = st.columns(len(_table_sensor_cols))
-            _selected_internal: list[str] = []
-            for _fi, _col_name in enumerate(_table_sensor_cols):
-                with _flag_cols[_fi]:
-                    _label = _col_to_label.get(_col_name, _col_name)
-                    _internal = _col_to_internal.get(_col_name, _col_name.lower())
-                    if st.checkbox(_label, value=True, key=f"pdf_table_col_{_col_name}"):
-                        _selected_internal.append(_internal)
-            if _selected_internal:
-                _pdf_table_sensor_columns = _selected_internal
+        st.caption("Intervallo tabella e colonne da includere nel report PDF:")
+        _control_cols = st.columns([1.8] + [1.0] * len(_table_sensor_cols))
+        with _control_cols[0]:
+            table_interval_min = int(
+                st.number_input(
+                    "Intervallo visualizzazione tabella (min)",
+                    min_value=1,
+                    max_value=240,
+                    value=15,
+                    step=1,
+                    key="table_interval_min",
+                )
+            )
 
-        st.dataframe(display_df, use_container_width=True)
+        _selected_internal: list[str] = []
+        for _fi, _col_name in enumerate(_table_sensor_cols):
+            with _control_cols[_fi + 1]:
+                _label = _col_to_label.get(_col_name, _col_name)
+                _internal = _col_to_internal.get(_col_name, _col_name.lower())
+                if st.checkbox(_label, value=True, key=f"pdf_table_col_{_col_name}"):
+                    _selected_internal.append(_internal)
+        if _selected_internal:
+            _pdf_table_sensor_columns = _selected_internal
+
+        display_rename_map = {
+            "s1": "P1",
+            "s2": "P2",
+            "s3": "P3",
+            "s4": "P4",
+            "s5": "P5",
+            "s6": "P6",
+            "s7": "S7",
+            "s8": "S8",
+        }
+        display_df_ui = display_df.rename(columns=display_rename_map).copy()
+        if "tempo_min" in display_df_ui.columns:
+            display_df_ui["tempo_min"] = pd.to_numeric(display_df_ui["tempo_min"], errors="coerce")
+            display_df_ui = display_df_ui.dropna(subset=["tempo_min"]).sort_values("tempo_min")
+            display_df_ui["_minute_slot"] = (display_df_ui["tempo_min"] // float(table_interval_min)) * float(table_interval_min)
+            display_df_ui = display_df_ui.groupby("_minute_slot", as_index=False).first()
+            display_df_ui = display_df_ui.drop(columns=["tempo_min"]).rename(columns={"_minute_slot": "Minuti"})
+
+        numeric_cols = display_df_ui.select_dtypes(include=["number"]).columns
+        for col in numeric_cols:
+            display_df_ui[col] = pd.to_numeric(display_df_ui[col], errors="coerce").round().astype("Int64")
+
+        st.dataframe(display_df_ui, use_container_width=True)
 
         st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
         st.markdown("<hr style='border:0; border-top:1px solid #d1d5db; margin: 6px 0 12px 0;'>", unsafe_allow_html=True)
@@ -2200,7 +2267,7 @@ if show_advanced_sections:
             send_interval = st.number_input("Intervallo invio (s)", min_value=0.1, max_value=10.0, value=1.0, step=0.1)
             payload_format = st.selectbox(
                 "Formato payload",
-                options=["Protocollo frame (8 valori + 255)", "CSV (s1..s8)", "JSON"],
+                options=["Protocollo frame (8 valori + 255)", "CSV (P1..P6 + S7..S8)", "JSON"],
                 index=0,
             )
     
@@ -2212,16 +2279,33 @@ if show_advanced_sections:
             ramp_steps = int(st.number_input("Ramp steps", min_value=1, max_value=200, value=20))
             jitter_sign = int(st.number_input("Random jitter base", min_value=1, max_value=5, value=2))
     
-        st.markdown("##### Valori base sensori (s1..s8)")
+        st.markdown("##### Valori base (P1..P6 + S7..S8)")
         s_cols_top = st.columns(4)
         s_cols_bottom = st.columns(4)
         base_values = [0] * 8
+        display_labels = ["P1", "P2", "P3", "P4", "P5", "P6", "S7", "S8"]
         for i in range(4):
             with s_cols_top[i]:
-                base_values[i] = int(st.number_input(f"s{i + 1}", min_value=0, max_value=200, value=45 + i, key=f"send_s{i + 1}"))
+                base_values[i] = int(
+                    st.number_input(
+                        display_labels[i],
+                        min_value=0,
+                        max_value=200,
+                        value=45 + i,
+                        key=f"send_s{i + 1}",
+                    )
+                )
         for i in range(4, 8):
             with s_cols_bottom[i - 4]:
-                base_values[i] = int(st.number_input(f"s{i + 1}", min_value=0, max_value=200, value=45 + i, key=f"send_s{i + 1}"))
+                base_values[i] = int(
+                    st.number_input(
+                        display_labels[i],
+                        min_value=0,
+                        max_value=200,
+                        value=45 + i,
+                        key=f"send_s{i + 1}",
+                    )
+                )
     
         preview_payload = _build_send_payload(payload_format, base_values, 1)
         st.code(preview_payload, language="text")
